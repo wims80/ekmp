@@ -1,0 +1,6 @@
+/target/
+
+# Local ESI credentials and OAuth refresh tokens
+akmp.json
+/.config/akmp.json
+/.config/akmp/

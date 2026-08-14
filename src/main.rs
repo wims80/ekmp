@@ -36,6 +36,10 @@ struct Killmail {
     id: u64,
     hash: String,
     character: String,
+    victim_id: Option<u64>,
+    victim: String,
+    ship: String,
+    time: String,
 }
 
 enum AppEvent {
@@ -48,6 +52,7 @@ struct App {
     killmails: Vec<Killmail>,
     status: String,
     auth_rx: Option<Receiver<Result<AppEvent, String>>>,
+    post_rx: Option<Receiver<Result<String, String>>>,
     loading: bool,
 }
 
@@ -59,6 +64,7 @@ impl App {
             killmails: Vec::new(),
             status: "Ready".into(),
             auth_rx: None,
+            post_rx: None,
             loading: false,
         }
     }
@@ -126,6 +132,22 @@ impl App {
         });
         self.auth_rx = Some(rx);
     }
+
+    fn post_killmail_async(&mut self, mail: &Killmail) {
+        if self.post_rx.is_some() {
+            self.status = "A zKillboard submission is already in progress".into();
+            return;
+        }
+        let mail = mail.clone();
+        let mail_id = mail.id;
+        let request_mail = mail.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = tx.send(post_killmail(&request_mail));
+        });
+        self.post_rx = Some(rx);
+        self.status = format!("Submitting killmail {} to zKillboard...", mail_id);
+    }
 }
 
 impl eframe::App for App {
@@ -147,6 +169,15 @@ impl eframe::App for App {
                     }
                     Err(e) => self.status = e,
                 }
+            }
+        }
+        if let Some(rx) = &self.post_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.post_rx = None;
+                self.status = match result {
+                    Ok(message) => message,
+                    Err(error) => format!("zKillboard submission failed: {error}"),
+                };
             }
         }
         egui::CentralPanel::default().show(ctx, |ui| {
@@ -180,21 +211,41 @@ impl eframe::App for App {
             if self.killmails.is_empty() {
                 ui.label("No killmails loaded.");
             }
+            let authenticated_ids: Vec<u64> = self.store.characters.iter().map(|c| c.id).collect();
+            let mut post_id = None;
             for mail in &self.killmails {
                 ui.horizontal(|ui| {
-                    ui.label(format!("{}  {}", mail.id, mail.character));
-                    if ui.button("Post to zKillboard").clicked() {
-                        self.status = match post_killmail(mail) {
-                            Ok(s) => s,
-                            Err(e) => e,
-                        };
+                    ui.label(format!(
+                        "{} | killed: {} | ship: {} | date: {} | source: {}",
+                        mail.id, mail.victim, mail.ship, mail.time, mail.character
+                    ));
+                    let own_character = mail
+                        .victim_id
+                        .is_some_and(|id| authenticated_ids.contains(&id));
+                    if !own_character
+                        && ui
+                            .add_enabled(
+                                self.post_rx.is_none(),
+                                egui::Button::new("Post to zKillboard"),
+                            )
+                            .clicked()
+                    {
+                        post_id = Some(mail.id);
+                    }
+                    if own_character {
+                        ui.label("Not postable: authenticated character");
                     }
                 });
+            }
+            if let Some(id) = post_id {
+                if let Some(mail) = self.killmails.iter().find(|mail| mail.id == id).cloned() {
+                    self.post_killmail_async(&mail);
+                }
             }
             ui.separator();
             ui.label(format!("Status: {}", self.status));
         });
-        if self.auth_rx.is_some() || self.loading {
+        if self.auth_rx.is_some() || self.post_rx.is_some() || self.loading {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
     }
@@ -285,6 +336,18 @@ struct Recent {
     killmail_hash: String,
 }
 
+#[derive(Deserialize)]
+struct KillmailDetail {
+    killmail_time: String,
+    victim: Victim,
+}
+
+#[derive(Deserialize)]
+struct Victim {
+    character_id: Option<u64>,
+    ship_type_id: Option<u64>,
+}
+
 fn access_token(c: &Character, client_id: &str, client_secret: &str) -> Result<String, String> {
     let response = Client::new()
         .post(&format!("{SSO}/token"))
@@ -315,13 +378,82 @@ fn load_all_killmails(
             .map_err(|e| e.to_string())?
             .json()
             .map_err(|e| e.to_string())?;
-        result.extend(response.into_iter().map(|k| Killmail {
-            id: k.killmail_id,
-            hash: k.killmail_hash,
-            character: c.name.clone(),
-        }));
+        for recent in response {
+            let detail: KillmailDetail = client
+                .get(format!(
+                    "{ESI}/killmails/{}/{}",
+                    recent.killmail_id, recent.killmail_hash
+                ))
+                .send()
+                .map_err(|e| format!("Killmail {} request failed: {e}", recent.killmail_id))?
+                .error_for_status()
+                .map_err(|e| format!("Killmail {} request failed: {e}", recent.killmail_id))?
+                .json()
+                .map_err(|e| format!("Killmail {} response invalid: {e}", recent.killmail_id))?;
+            result.push((recent, detail, c.name.clone()));
+        }
     }
-    Ok(result)
+
+    result
+        .into_iter()
+        .map(|(recent, detail, character)| {
+            let victim = detail
+                .victim
+                .character_id
+                .map(|id| resolve_character_name(&client, id))
+                .transpose()?
+                .unwrap_or_else(|| "Unknown character".into());
+            let ship = detail
+                .victim
+                .ship_type_id
+                .map(|id| resolve_type_name(&client, id))
+                .transpose()?
+                .unwrap_or_else(|| "Unknown ship".into());
+            Ok(Killmail {
+                id: recent.killmail_id,
+                hash: recent.killmail_hash,
+                character,
+                victim_id: detail.victim.character_id,
+                victim,
+                ship,
+                time: detail.killmail_time,
+            })
+        })
+        .collect()
+}
+
+fn resolve_character_name(client: &Client, id: u64) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct CharacterInfo {
+        name: String,
+    }
+    let response = client
+        .get(format!("{ESI}/characters/{id}/"))
+        .send()
+        .map_err(|e| format!("Character name lookup failed for {id}: {e}"))?;
+    let info: CharacterInfo = response
+        .error_for_status()
+        .map_err(|e| format!("Character name lookup failed for {id}: {e}"))?
+        .json()
+        .map_err(|e| format!("Character name response invalid for {id}: {e}"))?;
+    Ok(info.name)
+}
+
+fn resolve_type_name(client: &Client, id: u64) -> Result<String, String> {
+    #[derive(Deserialize)]
+    struct TypeInfo {
+        name: String,
+    }
+    let response = client
+        .get(format!("{ESI}/universe/types/{id}/"))
+        .send()
+        .map_err(|e| format!("Ship name lookup failed for type {id}: {e}"))?;
+    let info: TypeInfo = response
+        .error_for_status()
+        .map_err(|e| format!("Ship name lookup failed for type {id}: {e}"))?
+        .json()
+        .map_err(|e| format!("Ship name response invalid for type {id}: {e}"))?;
+    Ok(info.name)
 }
 fn post_killmail(mail: &Killmail) -> Result<String, String> {
     let response = Client::new()

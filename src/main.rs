@@ -1,6 +1,9 @@
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use eframe::egui;
+use rand::RngCore;
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{Read, Write},
@@ -20,7 +23,6 @@ const SCOPE: &str = "esi-killmails.read_killmails.v1";
 #[derive(Default, Serialize, Deserialize)]
 struct Store {
     client_id: String,
-    client_secret: String,
     characters: Vec<Character>,
 }
 
@@ -80,24 +82,29 @@ impl App {
             self.status = "An authentication or load operation is already in progress".into();
             return;
         }
-        if self.store.client_id.trim().is_empty() || self.store.client_secret.trim().is_empty() {
-            self.status = "Enter the ESI client ID and secret first".into();
+        if self.store.client_id.trim().is_empty() {
+            self.status = "Enter the ESI client ID first".into();
             return;
         }
         let state = uuid::Uuid::new_v4().to_string();
+        let mut verifier_bytes = [0_u8; 32];
+        rand::rng().fill_bytes(&mut verifier_bytes);
+        let verifier = URL_SAFE_NO_PAD.encode(verifier_bytes);
+        let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
         let mut url = Url::parse(&format!("{SSO}/authorize")).unwrap();
         url.query_pairs_mut()
             .append_pair("response_type", "code")
             .append_pair("redirect_uri", CALLBACK)
             .append_pair("client_id", &self.store.client_id)
             .append_pair("scope", SCOPE)
-            .append_pair("state", &state);
+            .append_pair("state", &state)
+            .append_pair("code_challenge", &challenge)
+            .append_pair("code_challenge_method", "S256");
         let (tx, rx) = mpsc::channel();
         let client_id = self.store.client_id.clone();
-        let secret = self.store.client_secret.clone();
         thread::spawn(move || {
             let result = receive_callback(&state)
-                .and_then(|code| exchange_code(&client_id, &secret, &code))
+                .and_then(|code| exchange_code(&client_id, &verifier, &code))
                 .map(AppEvent::Character);
             let _ = tx.send(result);
         });
@@ -124,10 +131,8 @@ impl App {
         self.loading = true;
         let (tx, rx) = mpsc::channel();
         let client_id = self.store.client_id.clone();
-        let client_secret = self.store.client_secret.clone();
         thread::spawn(move || {
-            let result =
-                load_all_killmails(&chars, &client_id, &client_secret).map(AppEvent::Killmails);
+            let result = load_all_killmails(&chars, &client_id).map(AppEvent::Killmails);
             let _ = tx.send(result);
         });
         self.auth_rx = Some(rx);
@@ -187,10 +192,6 @@ impl eframe::App for App {
             ui.horizontal(|ui| {
                 ui.label("ESI client ID");
                 ui.text_edit_singleline(&mut self.store.client_id);
-            });
-            ui.horizontal(|ui| {
-                ui.label("ESI client secret");
-                ui.add(egui::TextEdit::singleline(&mut self.store.client_secret).password(true));
             });
             if ui.button("Authenticate character").clicked() {
                 let _ = self.persist();
@@ -281,11 +282,15 @@ fn receive_callback(expected_state: &str) -> Result<String, String> {
     Ok(code)
 }
 
-fn exchange_code(client_id: &str, secret: &str, code: &str) -> Result<Character, String> {
+fn exchange_code(client_id: &str, verifier: &str, code: &str) -> Result<Character, String> {
     let token_response = Client::new()
         .post(&format!("{SSO}/token"))
-        .basic_auth(client_id, Some(secret))
-        .form(&[("grant_type", "authorization_code"), ("code", code)])
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("client_id", client_id),
+            ("code_verifier", verifier),
+        ])
         .send()
         .map_err(|e| format!("Token request failed: {e}"))?;
     let token: Token = decode_response(token_response, "Token request")?;
@@ -348,30 +353,26 @@ struct Victim {
     ship_type_id: Option<u64>,
 }
 
-fn access_token(c: &Character, client_id: &str, client_secret: &str) -> Result<String, String> {
+fn access_token(c: &Character, client_id: &str) -> Result<String, String> {
     let response = Client::new()
         .post(&format!("{SSO}/token"))
-        .basic_auth(client_id, Some(client_secret))
         .form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", c.refresh_token.as_str()),
+            ("client_id", client_id),
         ])
         .send()
         .map_err(|e| format!("Token refresh failed: {e}"))?;
     let token: Token = decode_response(response, "Token refresh")?;
     Ok(token.access_token)
 }
-fn load_all_killmails(
-    chars: &[Character],
-    client_id: &str,
-    client_secret: &str,
-) -> Result<Vec<Killmail>, String> {
+fn load_all_killmails(chars: &[Character], client_id: &str) -> Result<Vec<Killmail>, String> {
     let client = Client::new();
     let mut result = Vec::new();
     for c in chars {
         let response: Vec<Recent> = client
             .get(format!("{ESI}/characters/{}/killmails/recent/", c.id))
-            .bearer_auth(access_token(c, client_id, client_secret)?)
+            .bearer_auth(access_token(c, client_id)?)
             .send()
             .map_err(|e| e.to_string())?
             .error_for_status()

@@ -1,6 +1,7 @@
 mod app;
 mod auth;
 mod esi;
+mod killmail;
 mod models;
 mod storage;
 mod zkill;

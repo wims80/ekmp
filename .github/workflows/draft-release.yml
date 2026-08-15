@@ -43,7 +43,7 @@ jobs:
           sed 's|@EXEC_PATH@|/home/tester/.local/bin/ekmp|' packaging/linux/ekmp.desktop.in > ekmp.desktop
           desktop-file-validate ekmp.desktop
       - run: bash scripts/package-linux.sh "${GITHUB_REF_NAME#v}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-linux
           path: dist/*.tar.gz
@@ -66,7 +66,7 @@ jobs:
       - run: cargo +1.97.1 build --locked --release
       - shell: pwsh
         run: scripts/package-windows.ps1 -Version $env:GITHUB_REF_NAME.Substring(1)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-windows
           path: dist/*.zip

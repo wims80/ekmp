@@ -124,15 +124,27 @@ impl eframe::App for App {
             }
             ui.separator();
             ui.heading("Authenticated characters");
+            let mut remove_character = None;
             for character in &self.store.characters {
                 let corporation = character
                     .corporation_name
                     .as_deref()
                     .unwrap_or("corporation unknown");
-                ui.label(format!(
-                    "{} ({}) — {}",
-                    character.name, character.id, corporation
-                ));
+                ui.horizontal(|ui| {
+                    ui.label(format!(
+                        "{} ({}) — {}",
+                        character.name, character.id, corporation
+                    ));
+                    if ui
+                        .add_enabled(!self.is_busy(), egui::Button::new("Remove character"))
+                        .clicked()
+                    {
+                        remove_character = Some(character.clone());
+                    }
+                });
+            }
+            if let Some(character) = remove_character {
+                self.pending_character_removal = Some(character);
             }
             self.show_protected_victims(ui);
             if ui
@@ -308,6 +320,32 @@ impl eframe::App for App {
             } else if cancel {
                 self.pending_bulk = None;
                 self.log("Bulk submission cancelled");
+            }
+        }
+
+        if let Some(character) = self.pending_character_removal.as_ref() {
+            let name = character.name.clone();
+            let mut confirm = false;
+            let mut cancel = false;
+            egui::Window::new("Remove authenticated character")
+                .collapsible(false)
+                .resizable(false)
+                .show(ctx, |ui| {
+                    ui.label(format!(
+                        "Remove {name} and delete its refresh token from this application?"
+                    ));
+                    ui.horizontal(|ui| {
+                        confirm = ui.button("Remove character").clicked();
+                        cancel = ui.button("Cancel").clicked();
+                    });
+                });
+            if confirm {
+                if let Some(character) = self.pending_character_removal.take() {
+                    self.remove_character(character);
+                }
+            } else if cancel {
+                self.pending_character_removal = None;
+                self.log("Character removal cancelled");
             }
         }
 

@@ -3,10 +3,11 @@ mod worker;
 
 use crate::{
     killmail::{
-        character_summaries, remove_reported_killmails, report_state, submission_candidates,
-        ReportState,
+        character_summaries, remove_killmails_for_removed_character,
+        remove_killmails_without_authenticated_sources, remove_reported_killmails, report_state,
+        submission_candidates, ReportState,
     },
-    models::{Killmail, Store, ZkillCacheEntry},
+    models::{Character, Killmail, Store, ZkillCacheEntry},
     storage,
 };
 use std::{
@@ -22,6 +23,7 @@ const STATUS_HISTORY_LIMIT: usize = 200;
 enum Operation {
     Authenticate,
     MigrateRefreshTokens,
+    RemoveCharacter,
     Load,
     CheckCachedStatuses,
     AddProtectedVictim,
@@ -63,6 +65,7 @@ pub struct App {
     operation: Option<Operation>,
     post_stats: PostStats,
     pending_bulk: Option<Vec<Killmail>>,
+    pending_character_removal: Option<Character>,
     new_protected_victim_id: String,
     new_protected_victim_kind: ProtectedVictimKind,
     session_reports: Vec<SessionReport>,
@@ -73,6 +76,11 @@ impl App {
         let mut store = storage::load();
         let removed_reported =
             remove_reported_killmails(&store.zkill_cache, &mut store.cached_killmails);
+        let store_view = store.clone();
+        let removed_orphaned = remove_killmails_without_authenticated_sources(
+            &store_view,
+            &mut store.cached_killmails,
+        );
         let killmails = store.cached_killmails.clone();
         let mut app = Self {
             store,
@@ -83,11 +91,12 @@ impl App {
             operation: None,
             post_stats: PostStats::default(),
             pending_bulk: None,
+            pending_character_removal: None,
             new_protected_victim_id: String::new(),
             new_protected_victim_kind: ProtectedVictimKind::Character,
             session_reports: Vec::new(),
         };
-        if removed_reported > 0 {
+        if removed_reported > 0 || removed_orphaned > 0 {
             app.persist_or_log_error();
         }
         if app
@@ -167,6 +176,19 @@ impl App {
         self.log("Authorize the character in your browser...");
         self.event_rx = Some(rx);
         self.operation = Some(Operation::Authenticate);
+    }
+
+    fn remove_character(&mut self, character: Character) {
+        if self.is_busy() {
+            self.log("Another operation is already in progress");
+            return;
+        }
+        let name = character.name.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || worker::remove_character(character, tx));
+        self.log(format!("Removing {name}..."));
+        self.event_rx = Some(rx);
+        self.operation = Some(Operation::RemoveCharacter);
     }
 
     fn refresh_killmails(&mut self) {
@@ -297,6 +319,29 @@ impl App {
             WorkerEvent::RefreshTokensMigrated(characters) => {
                 self.store.characters = characters;
                 self.persist_or_log_error();
+            }
+            WorkerEvent::CharacterRemoved {
+                id,
+                name,
+                credential_error,
+            } => {
+                self.store.characters.retain(|character| character.id != id);
+                let store = self.store.clone();
+                let removed_count = remove_killmails_for_removed_character(
+                    &store,
+                    &mut self.store.cached_killmails,
+                    id,
+                );
+                remove_killmails_for_removed_character(&store, &mut self.killmails, id);
+                self.persist_or_log_error();
+                match credential_error {
+                    Some(error) => self.log(format!(
+                        "Removed {name}, {removed_count} cached killmails, but could not delete its system credential: {error}"
+                    )),
+                    None => self.log(format!(
+                        "Removed {name}, its refresh token, and {removed_count} cached killmails"
+                    )),
+                }
             }
             WorkerEvent::ProtectedVictimResolved { kind, victim } => {
                 let label = match kind {
@@ -434,6 +479,7 @@ impl App {
         match operation {
             Some(Operation::Authenticate) => {}
             Some(Operation::MigrateRefreshTokens) => self.check_cached_statuses_on_startup(),
+            Some(Operation::RemoveCharacter) => {}
             Some(Operation::AddProtectedVictim) => {}
             Some(Operation::CheckCachedStatuses) | Some(Operation::Load) => {
                 self.log_character_summaries();

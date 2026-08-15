@@ -42,6 +42,27 @@ Windows Credential Manager.
 **Acceptance criteria:** Both platforms use their native store during normal
 operation and exhibit the documented fallback behavior when it fails.
 
+### TODO-DEVELOPMENT-004 — Make status information understandable to users
+
+**Status:** Pending.
+
+Revise the Status and Activity text so it explains the result in terms a user
+can act on, without requiring knowledge of ESI, zKillboard lookup categories,
+or cached status states.
+
+- Report only unreported killmail counts in user-facing status summaries; do
+  not foreground existing/reported killmail counts.
+- State how many killmails are protected and therefore excluded from bulk
+  posting.
+- Where practical, identify the authenticated character, authenticated
+  corporation, or manually protected victim responsible for protection.
+- Keep detailed lookup diagnostics available for troubleshooting, but separate
+  them from the primary user-facing status summary.
+
+**Acceptance criteria:** After loading killmails, a user can understand how
+many can be bulk posted, how many are protected and why, and whether any action
+is needed, without interpreting internal status terminology.
+
 
 
 ### TODO-DEVELOPMENT-002 — Rename the application to EVE Killmail Publisher

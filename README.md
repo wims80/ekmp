@@ -7,6 +7,8 @@ and explicitly submitting selected killmails to zKillboard.
 
 - EVE SSO PKCE authentication with the `esi-killmails.read_killmails.v1` scope
 - Multiple authenticated characters
+- Removal of authenticated characters, their stored refresh tokens, and their
+  unshared cached killmails
 - Recent killmail retrieval from ESI
 - Cached zKillboard reporting status for each eligible killmail, refreshed for unknown entries at startup
 - Session-only results for explicitly submitted killmails, with zKillboard links

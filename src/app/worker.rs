@@ -19,6 +19,11 @@ pub(super) enum WorkerEvent {
     Character(Character),
     CharactersRefreshed(Vec<Character>),
     RefreshTokensMigrated(Vec<Character>),
+    CharacterRemoved {
+        id: u64,
+        name: String,
+        credential_error: Option<String>,
+    },
     ProtectedVictimResolved {
         kind: ProtectedVictimKind,
         victim: ProtectedVictim,
@@ -67,6 +72,20 @@ pub(super) fn migrate_refresh_tokens(mut characters: Vec<Character>, tx: Sender<
         }
     }
     let _ = tx.send(WorkerEvent::RefreshTokensMigrated(characters));
+    let _ = tx.send(WorkerEvent::Finished);
+}
+
+pub(super) fn remove_character(character: Character, tx: Sender<WorkerEvent>) {
+    let credential_error = if character.uses_json_refresh_token_fallback() {
+        None
+    } else {
+        crate::secrets::delete_refresh_token(character.id).err()
+    };
+    let _ = tx.send(WorkerEvent::CharacterRemoved {
+        id: character.id,
+        name: character.name,
+        credential_error,
+    });
     let _ = tx.send(WorkerEvent::Finished);
 }
 

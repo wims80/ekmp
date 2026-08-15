@@ -22,6 +22,12 @@ pub fn load_refresh_token(character_id: u64) -> Result<String, String> {
         .map_err(|error| error.to_string())
 }
 
+pub fn delete_refresh_token(character_id: u64) -> Result<(), String> {
+    entry(character_id)?
+        .delete_credential()
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

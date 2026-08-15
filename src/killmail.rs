@@ -53,8 +53,18 @@ pub(crate) fn is_eligible_for_bulk_posting(store: &Store, mail: &Killmail) -> bo
 }
 
 fn is_killmail_visible(store: &Store, mail: &Killmail, now: u64) -> bool {
-    report_state(store, mail.id, now) != ReportState::Reported
+    has_authenticated_source(store, mail)
+        && report_state(store, mail.id, now) != ReportState::Reported
         && (store.show_protected_killmails || is_eligible_for_bulk_posting(store, mail))
+}
+
+fn has_authenticated_source(store: &Store, mail: &Killmail) -> bool {
+    mail.sources.iter().any(|source| {
+        store
+            .characters
+            .iter()
+            .any(|character| character.id == source.id)
+    })
 }
 
 pub(crate) fn displayed_killmails<'a>(
@@ -78,6 +88,43 @@ pub(crate) fn remove_reported_killmails(
             .get(&mail.id)
             .is_some_and(|entry| entry.reported)
     });
+    previous_len - killmails.len()
+}
+
+pub(crate) fn remove_killmails_for_removed_character(
+    store: &Store,
+    killmails: &mut Vec<Killmail>,
+    character_id: u64,
+) -> usize {
+    let previous_len = killmails.len();
+    killmails.retain_mut(|mail| {
+        let sourced_by_removed_character =
+            mail.sources.iter().any(|source| source.id == character_id);
+        let still_sourced_by_authenticated_character = mail.sources.iter().any(|source| {
+            store
+                .characters
+                .iter()
+                .any(|character| character.id == source.id)
+        });
+        if sourced_by_removed_character && still_sourced_by_authenticated_character {
+            mail.sources.retain(|source| {
+                store
+                    .characters
+                    .iter()
+                    .any(|character| character.id == source.id)
+            });
+        }
+        !sourced_by_removed_character || still_sourced_by_authenticated_character
+    });
+    previous_len - killmails.len()
+}
+
+pub(crate) fn remove_killmails_without_authenticated_sources(
+    store: &Store,
+    killmails: &mut Vec<Killmail>,
+) -> usize {
+    let previous_len = killmails.len();
+    killmails.retain(|mail| has_authenticated_source(store, mail));
     previous_len - killmails.len()
 }
 
@@ -388,6 +435,68 @@ mod tests {
 
         assert_eq!(removed, 2);
         assert_eq!(ids, vec![11, 12, 14]);
+    }
+
+    #[test]
+    fn removing_a_character_removes_all_of_its_unshared_killmails() {
+        let mut store = store();
+        store.characters.push(Character {
+            id: 2,
+            name: "Pilot 2".into(),
+            refresh_token: None,
+            corporation_id: None,
+            corporation_name: None,
+        });
+        for id in [10, 11, 12] {
+            store.zkill_cache.insert(
+                id,
+                ZkillCacheEntry {
+                    reported: false,
+                    checked_at: 100,
+                },
+            );
+        }
+        let mut killmails = vec![
+            mail(10, &[1], None),
+            mail(11, &[1, 2], None),
+            mail(12, &[1], None),
+            mail(13, &[1], None),
+        ];
+        store.zkill_cache.insert(
+            12,
+            ZkillCacheEntry {
+                reported: true,
+                checked_at: 100,
+            },
+        );
+        store.characters.retain(|character| character.id != 1);
+
+        let removed = remove_killmails_for_removed_character(&store, &mut killmails, 1);
+
+        assert_eq!(removed, 3);
+        assert_eq!(
+            killmails.iter().map(|mail| mail.id).collect::<Vec<_>>(),
+            vec![11]
+        );
+        assert_eq!(
+            killmails[0].sources,
+            vec![CharacterSource {
+                id: 2,
+                name: "Pilot 2".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn killmails_without_authenticated_sources_are_removed() {
+        let store = Store::default();
+        let mut killmails = vec![mail(10, &[1], None)];
+
+        assert_eq!(
+            remove_killmails_without_authenticated_sources(&store, &mut killmails),
+            1
+        );
+        assert!(killmails.is_empty());
     }
 
     #[test]

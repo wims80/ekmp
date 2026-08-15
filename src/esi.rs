@@ -4,16 +4,18 @@ use crate::{
 };
 use reqwest::blocking::Client;
 use serde::Deserialize;
+use std::collections::HashMap;
 
 const ESI: &str = "https://esi.evetech.net/latest";
 
-pub fn load_killmails(chars: &[Character], client_id: &str) -> Result<Vec<Killmail>, String> {
+pub fn load_killmails(chars: &[Character]) -> Result<Vec<Killmail>, String> {
     let client = Client::new();
-    let mut result = Vec::new();
+    let mut pending = Vec::new();
+    let mut positions = HashMap::new();
     for c in chars {
         let response: Vec<Recent> = client
             .get(format!("{ESI}/characters/{}/killmails/recent/", c.id))
-            .bearer_auth(auth::access_token(c, client_id)?)
+            .bearer_auth(auth::access_token(c)?)
             .send()
             .map_err(|e| e.to_string())?
             .error_for_status()
@@ -21,6 +23,13 @@ pub fn load_killmails(chars: &[Character], client_id: &str) -> Result<Vec<Killma
             .json()
             .map_err(|e| e.to_string())?;
         for recent in response {
+            add_pending(&mut pending, &mut positions, recent, c);
+        }
+    }
+    pending
+        .into_iter()
+        .map(|pending| {
+            let recent = pending.recent;
             let detail: Detail = client
                 .get(format!(
                     "{ESI}/killmails/{}/{}",
@@ -32,12 +41,6 @@ pub fn load_killmails(chars: &[Character], client_id: &str) -> Result<Vec<Killma
                 .map_err(|e| format!("Killmail {} request failed: {e}", recent.killmail_id))?
                 .json()
                 .map_err(|e| format!("Killmail {} response invalid: {e}", recent.killmail_id))?;
-            result.push((recent, detail, c.name.clone()));
-        }
-    }
-    result
-        .into_iter()
-        .map(|(recent, detail, character)| {
             let victim = detail
                 .victim
                 .character_id
@@ -53,7 +56,7 @@ pub fn load_killmails(chars: &[Character], client_id: &str) -> Result<Vec<Killma
             Ok(Killmail {
                 id: recent.killmail_id,
                 hash: recent.killmail_hash,
-                character,
+                sources: pending.sources,
                 victim_id: detail.victim.character_id,
                 victim,
                 ship,
@@ -61,6 +64,34 @@ pub fn load_killmails(chars: &[Character], client_id: &str) -> Result<Vec<Killma
             })
         })
         .collect()
+}
+
+fn add_pending(
+    pending: &mut Vec<PendingKillmail>,
+    positions: &mut HashMap<u64, usize>,
+    recent: Recent,
+    character: &Character,
+) {
+    let source = crate::models::CharacterSource {
+        id: character.id,
+        name: character.name.clone(),
+    };
+    if let Some(&index) = positions.get(&recent.killmail_id) {
+        if !pending[index].sources.iter().any(|old| old.id == source.id) {
+            pending[index].sources.push(source);
+        }
+    } else {
+        positions.insert(recent.killmail_id, pending.len());
+        pending.push(PendingKillmail {
+            recent,
+            sources: vec![source],
+        });
+    }
+}
+
+struct PendingKillmail {
+    recent: Recent,
+    sources: Vec<crate::models::CharacterSource>,
 }
 
 fn character_name(client: &Client, id: u64) -> Result<String, String> {
@@ -104,4 +135,46 @@ struct Victim {
 #[derive(Deserialize)]
 struct Name {
     name: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn character(id: u64, name: &str) -> Character {
+        Character {
+            id,
+            name: name.into(),
+            refresh_token: String::new(),
+        }
+    }
+
+    #[test]
+    fn duplicate_killmails_retain_all_source_characters() {
+        let mut pending = Vec::new();
+        let mut positions = HashMap::new();
+        add_pending(
+            &mut pending,
+            &mut positions,
+            Recent {
+                killmail_id: 42,
+                killmail_hash: "hash".into(),
+            },
+            &character(1, "One"),
+        );
+        add_pending(
+            &mut pending,
+            &mut positions,
+            Recent {
+                killmail_id: 42,
+                killmail_hash: "hash".into(),
+            },
+            &character(2, "Two"),
+        );
+
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].sources.len(), 2);
+        assert_eq!(pending[0].sources[0].name, "One");
+        assert_eq!(pending[0].sources[1].name, "Two");
+    }
 }

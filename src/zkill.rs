@@ -5,8 +5,11 @@ use serde::Deserialize;
 use std::collections::HashSet;
 
 const API: &str = "https://zkillboard.com/api";
-const USER_AGENT_VALUE: &str =
-    concat!("akmp/", env!("CARGO_PKG_VERSION"), " EVE killmail reporter");
+const USER_AGENT_VALUE: &str = concat!(
+    "ekmp/",
+    env!("CARGO_PKG_VERSION"),
+    " EVE Killmail Publisher"
+);
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct PostOutcome {

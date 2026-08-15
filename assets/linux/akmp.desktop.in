@@ -1,9 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=akmp (development)
-Comment=EVE Online killmail reporter
-Exec=@REPO_ROOT@/target/debug/akmp
-Icon=@REPO_ROOT@/assets/app-icon.png
-Terminal=false
-Categories=Utility;
-StartupNotify=true

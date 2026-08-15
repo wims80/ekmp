@@ -1,6 +1,6 @@
-# akmp
+# EVE Killmail Publisher
 
-akmp is a Rust desktop utility for reviewing EVE Online character killmails
+EVE Killmail Publisher (`ekmp`) is a Rust desktop utility for reviewing EVE Online character killmails
 and explicitly submitting selected killmails to zKillboard.
 
 ## Current Features
@@ -39,12 +39,18 @@ Users can then run the application, authenticate one or more characters, load
 recent killmails, and use an individual post button when desired. They do not
 need their own EVE developer application or credentials.
 
-The local configuration is stored in `~/.config/akmp/akmp.json`. It contains
+The local configuration is stored in `~/.config/ekmp/ekmp.json`. It contains
 application preferences, a local snapshot of the most recently loaded
 killmails, and their zKillboard status cache. The snapshot is displayed
 immediately on the next startup. Full killmail records already reported to
 zKillboard are removed from the snapshot; only their compact status-cache
 entries are retained. Unreported results are checked again after 15 minutes.
+
+Configuration from the former application identity at
+`~/.config/akmp/akmp.json` is not migrated. It is intentionally left in place,
+and users upgrading from that identity must configure and authenticate `ekmp`
+again. Because the old file may contain refresh-token fallbacks, delete it only
+when it is no longer needed and can be removed securely.
 
 OAuth refresh tokens are stored in the operating system credential store:
 Secret Service on Linux (GNOME Keyring or KDE/KWallet), Keychain on macOS, and
@@ -52,7 +58,7 @@ Credential Manager on Windows. Linux requires an unlocked Secret Service
 provider; macOS and Windows provide their credential stores as part of the
 operating system. If the credential store is unavailable or fails on any
 platform, the application falls back to storing the affected refresh token in
-`akmp.json` and displays a persistent security warning. Treat that file as
+`ekmp.json` and displays a persistent security warning. Treat that file as
 sensitive whenever the warning is present. PKCE means a client secret is never
 needed or stored by this desktop application.
 
@@ -74,7 +80,8 @@ this once from the repository:
 scripts/setup-dev-launcher.sh
 ```
 
-Then build normally with `cargo build` and launch **akmp (development)** from
-the application menu. Cargo always replaces `target/debug/akmp` in place, so
+Then build normally with `cargo build` and launch **EVE Killmail Publisher
+(development)** from the application menu. Cargo always replaces
+`target/debug/ekmp` in place, so
 the launcher does not need to be reinstalled after recompiling. Re-run the
 script only if the repository moves to a different directory.

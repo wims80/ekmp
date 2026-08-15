@@ -112,7 +112,7 @@ impl eframe::App for App {
             if self.has_json_refresh_token_fallback() {
                 ui.colored_label(
                     egui::Color32::YELLOW,
-                    "Security warning: one or more refresh tokens are stored in akmp.json because the system credential store was unavailable.",
+                    "Security warning: one or more refresh tokens are stored in ekmp.json because the system credential store was unavailable.",
                 );
             }
             ui.separator();

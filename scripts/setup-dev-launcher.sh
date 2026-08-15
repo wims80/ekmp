@@ -3,12 +3,12 @@ set -euo pipefail
 
 script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 repo_root="$(cd -- "$script_dir/.." && pwd -P)"
-template="$repo_root/assets/linux/akmp.desktop.in"
+template="$repo_root/assets/linux/ekmp.desktop.in"
 desktop_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
-desktop_file="$desktop_dir/akmp.desktop"
+desktop_file="$desktop_dir/ekmp.desktop"
 
 mkdir -p "$desktop_dir"
-temporary_file="$(mktemp "$desktop_dir/.akmp.XXXXXX.desktop")"
+temporary_file="$(mktemp "$desktop_dir/.ekmp.XXXXXX.desktop")"
 trap 'rm -f "$temporary_file"' EXIT
 
 while IFS= read -r line || [[ -n "$line" ]]; do

@@ -58,21 +58,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "akmp"
-version = "0.1.0"
-dependencies = [
- "base64",
- "eframe",
- "keyring",
- "open",
- "rand 0.9.5",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
-]
-
-[[package]]
 name = "android-activity"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -915,6 +900,21 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "winit",
+]
+
+[[package]]
+name = "ekmp"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "eframe",
+ "keyring",
+ "open",
+ "rand 0.9.5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

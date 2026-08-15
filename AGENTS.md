@@ -1,10 +1,10 @@
 ## Project context
 
 - The user-facing application name is **EVE Killmail Publisher**.
-- The Cargo package, executable, application ID, storage paths, and some assets
-  still use the internal name `akmp`.
-- Renaming the remaining `akmp` references is tracked in `TODO.md`; do not
-  perform that migration incidentally.
+- The lowercase shorthand and technical identifier is `ekmp`; the Cargo
+  package, executable, application ID, storage paths, and platform assets use
+  that identifier.
+- Repository creation and GitHub identity work remain tracked in `TODO.md`.
 - This is a native Rust desktop application built with `eframe`/`egui`.
 - EVE data comes from ESI, authentication uses EVE SSO with PKCE, and killmails
   are submitted to zKillboard.
@@ -57,7 +57,7 @@
 
 ## Persistence
 
-- Local state is currently stored in `~/.config/akmp/akmp.json`.
+- Local state is currently stored in `~/.config/ekmp/ekmp.json`.
 - It can contain OAuth refresh-token fallbacks when a system credential store
   is unavailable or fails, and must then be treated as sensitive.
 - Persistence compatibility is not currently required because the application

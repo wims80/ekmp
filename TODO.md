@@ -6,30 +6,31 @@
 
 #### TODO-DEVELOPMENT-002 — Rename the application to EVE Killmail Publisher
 
-**Status:** Pending.
+**Status:** Pending GitHub repository work.
 
-The current user-facing name is **EVE Killmail Publisher**, but the project
-still uses `akmp` internally and in development/release assets. Decide whether
-to rename this repository or create a new repository, then update the complete
-application identity consistently.
+The local application identity has been renamed to **EVE Killmail Publisher**,
+with the lowercase shorthand and technical identifier `ekmp`. The Cargo
+package, executable, user agent, window/application ID, storage location,
+development launcher, desktop-entry template, and documentation use the new
+identity.
 
-- Rename the Cargo package, executable, user agent, window/application ID, and
-  all source-code references to `akmp` where appropriate.
-- Decide whether existing configuration under `~/.config/akmp/` should be
-  migrated to the new storage location or intentionally left behind, and
-  document the decision.
-- Update README instructions, launcher scripts, desktop-entry templates,
-  icons/assets, release metadata, CI, and packaging names.
-- Update the repository URL, issue links, release artifacts, and any new
-  repository transition documentation if a separate repository is created.
-- Search the entire repository for stale `akmp` references and verify the
-  branded window title, subtitle, executable, launcher, and installed desktop
-  entry all use the final name.
+Configuration is now stored under `~/.config/ekmp/ekmp.json`. Configuration
+from the former `~/.config/akmp/akmp.json` location is intentionally left
+behind rather than migrated; the README documents the reconfiguration and
+sensitive-data implications.
 
-**Acceptance criteria:** A clean checkout of the renamed project builds an
-executable and packaged desktop entry branded as EVE Killmail Publisher, with
-documented handling of existing user configuration and no unintended stale
-`akmp` identity references.
+Remaining work requiring GitHub access:
+
+- Create the new `ekmp` repository and move the project into it.
+- Update the repository URL, issue links, release artifacts, and repository
+  transition documentation.
+- From a clean checkout of the new repository, verify the branded window,
+  executable, launcher, and desktop entry, and search for unintended stale
+  identity references.
+
+**Acceptance criteria:** A clean checkout of the new repository builds an
+`ekmp` executable and desktop entry branded as EVE Killmail Publisher, with
+repository links and release artifacts using the final identity.
 
 #### TODO-DEVELOPMENT-004 — Make status information understandable to users
 
@@ -71,13 +72,13 @@ versions.
   browser authentication, local storage, and opening external links.
 - Extract the supplied `windows/app-icon.ico` into a repository-owned Windows
   asset and embed it as the executable icon so Explorer, shortcuts, and pinned
-  taskbar entries use the akmp artwork.
+  taskbar entries use the ekmp artwork.
 - Retain the embedded PNG viewport icon for the live window, Alt-Tab, and
   taskbar icon; verify it is shown correctly on Windows at common DPI scales.
 - Add Windows-specific release/packaging documentation without changing the
   Linux development-launcher workflow.
 
-**Acceptance criteria:** A clean Windows checkout can build and run akmp; its
+**Acceptance criteria:** A clean Windows checkout can build and run ekmp; its
 executable and running-window surfaces display the supplied icon, and the
 existing user-facing workflow works without Linux-only assumptions.
 
@@ -89,7 +90,7 @@ Manually integration-test refresh-token storage using Windows Credential
 Manager.
 
 - Authenticate a character and verify its refresh token is stored in
-  Credential Manager rather than `akmp.json`.
+  Credential Manager rather than `ekmp.json`.
 - Restart the application and verify token retrieval and ESI requests succeed.
 - Temporarily make Credential Manager unavailable or deny access; verify the
   application uses the JSON fallback and persistent security warning.
@@ -123,7 +124,7 @@ versions.
 - Add macOS-specific release/packaging documentation without changing the
   Linux development-launcher workflow.
 
-**Acceptance criteria:** A clean macOS checkout can build and run akmp; its
+**Acceptance criteria:** A clean macOS checkout can build and run ekmp; its
 application bundle and running-window surfaces display the supplied icon, and
 the existing user-facing workflow works without Linux-only assumptions.
 
@@ -134,7 +135,7 @@ the existing user-facing workflow works without Linux-only assumptions.
 Manually integration-test refresh-token storage using macOS Keychain.
 
 - Authenticate a character and verify its refresh token is stored in Keychain
-  rather than `akmp.json`.
+  rather than `ekmp.json`.
 - Restart the application and verify token retrieval and ESI requests succeed.
 - Temporarily make Keychain unavailable or deny access; verify the application
   uses the JSON fallback and persistent security warning.
@@ -155,23 +156,23 @@ No pending generic release TODOs.
 **Status:** Pending before the first public release.
 
 The current KDE/Wayland launcher is intentionally development-only: it writes
-`~/.local/share/applications/akmp.desktop` with absolute paths to this checkout
-and `target/debug/akmp`.
+`~/.local/share/applications/ekmp.desktop` with absolute paths to this checkout
+and `target/debug/ekmp`.
 
 Before release:
 
 - Remove `scripts/setup-dev-launcher.sh`.
-- Remove `assets/linux/akmp.desktop.in`.
+- Remove `assets/linux/ekmp.desktop.in`.
 - Replace the development-launcher section in `README.md` with release
   installation/packaging instructions.
-- Add release packaging that installs a production `akmp.desktop` entry and
+- Add release packaging that installs a production `ekmp.desktop` entry and
   appropriately named Linux `hicolor` icon assets.
-- Confirm the production desktop-entry filename remains `akmp.desktop`, so it
+- Confirm the production desktop-entry filename remains `ekmp.desktop`, so it
   matches eframe's Wayland application ID.
 - Keep `assets/app-icon.png` and the eframe viewport icon unless the release
   packaging approach deliberately replaces their runtime use.
 
-**Acceptance criteria:** A package-installed release shows the `akmp` icon in
+**Acceptance criteria:** A package-installed release shows the `ekmp` icon in
 KDE/Wayland launchers and taskbars without any checkout-specific paths or
 development setup script.
 

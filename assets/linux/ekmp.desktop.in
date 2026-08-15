@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=EVE Killmail Publisher (development)
+Comment=Review and publish EVE Online killmails
+Exec=@REPO_ROOT@/target/debug/ekmp
+Icon=@REPO_ROOT@/assets/app-icon.png
+Terminal=false
+Categories=Utility;
+StartupNotify=true

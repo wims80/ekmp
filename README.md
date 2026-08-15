@@ -99,10 +99,10 @@ maintainer and does not grant write access to outside contributors.
 
 ## EVE notice
 
-© 2014 CCP hf. All rights reserved. “EVE”, “EVE Online”, “CCP”, and all
-related logos and images are trademarks or registered trademarks of CCP hf.
-EVE Killmail Publisher is an independent, non-commercial third-party tool and
-is not affiliated with or endorsed by CCP hf.
+© 2026 Fenris Creations. All rights reserved. EVE Online® and Fenris
+Creations™ and all related logos and other elements are trademarks of Fenris
+Creations. EVE Killmail Publisher is an independent, non-commercial
+third-party tool and is not affiliated with or endorsed by Fenris Creations.
 
 ## Development
 

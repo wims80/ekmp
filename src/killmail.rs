@@ -188,7 +188,7 @@ mod tests {
             characters: vec![Character {
                 id: 1,
                 name: "Pilot 1".into(),
-                refresh_token: String::new(),
+                refresh_token: None,
                 corporation_id: Some(100),
                 corporation_name: Some("Pilot Corp".into()),
             }],

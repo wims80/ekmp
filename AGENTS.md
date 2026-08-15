@@ -44,6 +44,10 @@
   ordering, and submission policy.
 - `src/auth.rs`, `src/esi.rs`, and `src/zkill.rs` are API-specific modules.
 - `src/models.rs` contains persisted and domain models.
+- `src/secrets.rs` owns cross-platform refresh-token storage: Secret Service on
+  Linux, Keychain on macOS, and Credential Manager on Windows. It also supports
+  the common JSON fallback when a credential store fails; keep its work off the
+  UI thread.
 - `src/storage.rs` owns local configuration loading and saving.
 - Keep blocking HTTP and sleeps off the egui UI thread.
 - Keep submission-policy functions centralized and covered by tests.
@@ -54,7 +58,8 @@
 ## Persistence
 
 - Local state is currently stored in `~/.config/akmp/akmp.json`.
-- It contains OAuth refresh tokens and must be treated as sensitive.
+- It can contain OAuth refresh-token fallbacks when a system credential store
+  is unavailable or fails, and must then be treated as sensitive.
 - Persistence compatibility is not currently required because the application
   is under heavy development and has one user.
 - Do not add compatibility aliases or migrations unless explicitly requested.

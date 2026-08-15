@@ -185,7 +185,7 @@ mod tests {
         Character {
             id,
             name: name.into(),
-            refresh_token: String::new(),
+            refresh_token: None,
             corporation_id: None,
             corporation_name: None,
         }

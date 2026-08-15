@@ -3,6 +3,7 @@ mod auth;
 mod esi;
 mod killmail;
 mod models;
+mod secrets;
 mod storage;
 mod zkill;
 

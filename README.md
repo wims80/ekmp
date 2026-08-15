@@ -38,14 +38,21 @@ recent killmails, and use an individual post button when desired. They do not
 need their own EVE developer application or credentials.
 
 The local configuration is stored in `~/.config/akmp/akmp.json`. It contains
-OAuth refresh tokens and should be treated as sensitive. PKCE means the client
-secret is not needed or stored by this desktop application. The current
-prototype does not encrypt the configuration file. It also contains a local
-snapshot of the most recently loaded killmails and their zKillboard status
-cache. The snapshot is displayed immediately on the next startup. Full
-killmail records already reported to zKillboard are removed from the snapshot;
-only their compact status-cache entries are retained. Unreported results are
-checked again after 15 minutes.
+application preferences, a local snapshot of the most recently loaded
+killmails, and their zKillboard status cache. The snapshot is displayed
+immediately on the next startup. Full killmail records already reported to
+zKillboard are removed from the snapshot; only their compact status-cache
+entries are retained. Unreported results are checked again after 15 minutes.
+
+OAuth refresh tokens are stored in the operating system credential store:
+Secret Service on Linux (GNOME Keyring or KDE/KWallet), Keychain on macOS, and
+Credential Manager on Windows. Linux requires an unlocked Secret Service
+provider; macOS and Windows provide their credential stores as part of the
+operating system. If the credential store is unavailable or fails on any
+platform, the application falls back to storing the affected refresh token in
+`akmp.json` and displays a persistent security warning. Treat that file as
+sensitive whenever the warning is present. PKCE means a client secret is never
+needed or stored by this desktop application.
 
 ## Development
 

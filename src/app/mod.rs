@@ -21,6 +21,7 @@ const STATUS_HISTORY_LIMIT: usize = 200;
 #[derive(Clone, Copy)]
 enum Operation {
     Authenticate,
+    MigrateRefreshTokens,
     Load,
     CheckCachedStatuses,
     AddProtectedVictim,
@@ -89,7 +90,16 @@ impl App {
         if removed_reported > 0 {
             app.persist_or_log_error();
         }
-        app.check_cached_statuses_on_startup();
+        if app
+            .store
+            .characters
+            .iter()
+            .any(|character| character.uses_json_refresh_token_fallback())
+        {
+            app.migrate_refresh_tokens();
+        } else {
+            app.check_cached_statuses_on_startup();
+        }
         app
     }
 
@@ -120,6 +130,22 @@ impl App {
         ));
         self.event_rx = Some(rx);
         self.operation = Some(Operation::CheckCachedStatuses);
+    }
+
+    fn migrate_refresh_tokens(&mut self) {
+        let characters = self.store.characters.clone();
+        let (tx, rx) = mpsc::channel();
+        thread::spawn(move || worker::migrate_refresh_tokens(characters, tx));
+        self.log("Moving refresh tokens to the system credential store...");
+        self.event_rx = Some(rx);
+        self.operation = Some(Operation::MigrateRefreshTokens);
+    }
+
+    fn has_json_refresh_token_fallback(&self) -> bool {
+        self.store
+            .characters
+            .iter()
+            .any(|character| character.uses_json_refresh_token_fallback())
     }
 
     fn log(&mut self, message: impl Into<String>) {
@@ -268,6 +294,10 @@ impl App {
                 self.store.characters = characters;
                 self.persist_or_log_error();
             }
+            WorkerEvent::RefreshTokensMigrated(characters) => {
+                self.store.characters = characters;
+                self.persist_or_log_error();
+            }
             WorkerEvent::ProtectedVictimResolved { kind, victim } => {
                 let label = match kind {
                     ProtectedVictimKind::Character => {
@@ -403,6 +433,7 @@ impl App {
         self.event_rx = None;
         match operation {
             Some(Operation::Authenticate) => {}
+            Some(Operation::MigrateRefreshTokens) => self.check_cached_statuses_on_startup(),
             Some(Operation::AddProtectedVictim) => {}
             Some(Operation::CheckCachedStatuses) | Some(Operation::Load) => {
                 self.log_character_summaries();

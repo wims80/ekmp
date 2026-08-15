@@ -109,6 +109,12 @@ impl eframe::App for App {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("EVE Killmail Publisher");
             ui.label("EVE Online killmail publisher");
+            if self.has_json_refresh_token_fallback() {
+                ui.colored_label(
+                    egui::Color32::YELLOW,
+                    "Security warning: one or more refresh tokens are stored in akmp.json because the system credential store was unavailable.",
+                );
+            }
             ui.separator();
             if ui
                 .add_enabled(!self.is_busy(), egui::Button::new("Authenticate character"))

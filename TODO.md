@@ -25,6 +25,23 @@ versions.
 executable and running-window surfaces display the supplied icon, and the
 existing user-facing workflow works without Linux-only assumptions.
 
+### TODO-DEVELOPMENT-003 — Test native credential storage on macOS and Windows
+
+**Status:** Pending.
+
+Manually integration-test refresh-token storage using macOS Keychain and
+Windows Credential Manager.
+
+- Authenticate a character and verify its refresh token is stored in the
+  platform credential store rather than `akmp.json`.
+- Restart the application and verify token retrieval and ESI requests succeed.
+- Temporarily make the credential store unavailable or deny access; verify the
+  application uses the same JSON fallback and persistent security warning as
+  Linux.
+
+**Acceptance criteria:** Both platforms use their native store during normal
+operation and exhibit the documented fallback behavior when it fails.
+
 
 
 ### TODO-DEVELOPMENT-002 — Rename the application to EVE Killmail Publisher

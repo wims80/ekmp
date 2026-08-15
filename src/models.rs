@@ -32,11 +32,18 @@ impl ZkillCacheEntry {
 pub struct Character {
     pub id: u64,
     pub name: String,
-    pub refresh_token: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
     #[serde(default)]
     pub corporation_id: Option<u64>,
     #[serde(default)]
     pub corporation_name: Option<String>,
+}
+
+impl Character {
+    pub fn uses_json_refresh_token_fallback(&self) -> bool {
+        self.refresh_token.is_some()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +88,7 @@ mod tests {
         assert!(store.cached_killmails.is_empty());
         assert!(store.manually_protected_characters.is_empty());
         assert!(store.manually_protected_corporations.is_empty());
+        assert_eq!(store.characters[0].refresh_token.as_deref(), Some("token"));
         assert_eq!(store.characters[0].corporation_id, None);
     }
 
@@ -151,5 +159,42 @@ mod tests {
         assert_eq!(restored.cached_killmails[0].id, 7);
         assert_eq!(restored.manually_protected_characters[0].id, 8);
         assert_eq!(restored.manually_protected_corporations[0].id, 9);
+    }
+
+    #[test]
+    fn secure_store_tokens_are_not_serialized() {
+        let store = Store {
+            characters: vec![Character {
+                id: 1,
+                name: "Pilot".into(),
+                refresh_token: None,
+                corporation_id: None,
+                corporation_name: None,
+            }],
+            ..Store::default()
+        };
+
+        let json = serde_json::to_string(&store).unwrap();
+
+        assert!(!json.contains("refresh_token"));
+    }
+
+    #[test]
+    fn json_fallback_tokens_are_serialized() {
+        let store = Store {
+            characters: vec![Character {
+                id: 1,
+                name: "Pilot".into(),
+                refresh_token: Some("token".into()),
+                corporation_id: None,
+                corporation_name: None,
+            }],
+            ..Store::default()
+        };
+
+        let json = serde_json::to_string(&store).unwrap();
+
+        assert!(json.contains("refresh_token"));
+        assert!(store.characters[0].uses_json_refresh_token_fallback());
     }
 }

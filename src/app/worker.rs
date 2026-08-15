@@ -18,6 +18,7 @@ pub(super) enum WorkerEvent {
     Status(String),
     Character(Character),
     CharactersRefreshed(Vec<Character>),
+    RefreshTokensMigrated(Vec<Character>),
     ProtectedVictimResolved {
         kind: ProtectedVictimKind,
         victim: ProtectedVictim,
@@ -49,11 +50,46 @@ pub(super) fn authenticate(tx: Sender<WorkerEvent>) {
                     "Character authenticated, but corporation lookup failed: {error}"
                 )));
             }
+            save_refresh_token_or_keep_fallback(&mut character, &tx);
             let _ = tx.send(WorkerEvent::Character(character));
             let _ = tx.send(WorkerEvent::Finished);
         }
         Err(error) => {
             let _ = tx.send(WorkerEvent::Failed(error));
+        }
+    }
+}
+
+pub(super) fn migrate_refresh_tokens(mut characters: Vec<Character>, tx: Sender<WorkerEvent>) {
+    for character in &mut characters {
+        if character.refresh_token.is_some() {
+            save_refresh_token_or_keep_fallback(character, &tx);
+        }
+    }
+    let _ = tx.send(WorkerEvent::RefreshTokensMigrated(characters));
+    let _ = tx.send(WorkerEvent::Finished);
+}
+
+fn save_refresh_token_or_keep_fallback(character: &mut Character, tx: &Sender<WorkerEvent>) {
+    let Some(token) = character.refresh_token.as_deref() else {
+        return;
+    };
+    let result = crate::secrets::save_refresh_token(character.id, token);
+    save_refresh_token_or_keep_fallback_with(character, result, tx);
+}
+
+fn save_refresh_token_or_keep_fallback_with(
+    character: &mut Character,
+    result: Result<(), String>,
+    tx: &Sender<WorkerEvent>,
+) {
+    match result {
+        Ok(()) => character.refresh_token = None,
+        Err(error) => {
+            let _ = tx.send(WorkerEvent::Status(format!(
+                "Could not use the system credential store for {}: {error}. Its refresh token is stored in the local JSON configuration.",
+                character.name
+            )));
         }
     }
 }
@@ -268,7 +304,7 @@ mod tests {
             characters: vec![Character {
                 id: 1,
                 name: "Pilot 1".into(),
-                refresh_token: String::new(),
+                refresh_token: None,
                 corporation_id: Some(100),
                 corporation_name: Some("Pilot Corp".into()),
             }],
@@ -297,6 +333,42 @@ mod tests {
                 ("Pilot 1".into(), 1, vec![12], false),
                 ("Pilot 1".into(), 1, vec![13], true),
             ]
+        );
+    }
+
+    #[test]
+    fn successful_token_migration_removes_the_json_fallback() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut character = Character {
+            id: 1,
+            name: "Pilot".into(),
+            refresh_token: Some("token".into()),
+            corporation_id: None,
+            corporation_name: None,
+        };
+
+        save_refresh_token_or_keep_fallback_with(&mut character, Ok(()), &tx);
+
+        assert!(character.refresh_token.is_none());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn failed_token_migration_keeps_the_json_fallback_and_warns() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut character = Character {
+            id: 1,
+            name: "Pilot".into(),
+            refresh_token: Some("token".into()),
+            corporation_id: None,
+            corporation_name: None,
+        };
+
+        save_refresh_token_or_keep_fallback_with(&mut character, Err("unavailable".into()), &tx);
+
+        assert_eq!(character.refresh_token.as_deref(), Some("token"));
+        assert!(
+            matches!(rx.recv().unwrap(), WorkerEvent::Status(message) if message.contains("local JSON configuration"))
         );
     }
 }

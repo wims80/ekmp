@@ -1,4 +1,4 @@
-use crate::models::Character;
+use crate::{models::Character, secrets};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::{rngs::OsRng, TryRngCore};
 use reqwest::{blocking::Client, Url};
@@ -44,11 +44,19 @@ pub fn authenticate() -> Result<Character, String> {
 }
 
 pub fn access_token(c: &Character) -> Result<String, String> {
+    let refresh_token = match &c.refresh_token {
+        Some(token) => token.clone(),
+        None => secrets::load_refresh_token(c.id).map_err(|secure_error| {
+            format!(
+                "Could not read the refresh token from the system credential store: {secure_error}. Re-authenticate this character."
+            )
+        })?,
+    };
     let response = Client::new()
         .post(format!("{SSO}/token"))
         .form(&[
             ("grant_type", "refresh_token"),
-            ("refresh_token", c.refresh_token.as_str()),
+            ("refresh_token", refresh_token.as_str()),
             ("client_id", CLIENT_ID),
         ])
         .send()
@@ -105,7 +113,7 @@ fn exchange_code(verifier: &str, code: &str) -> Result<Character, String> {
     Ok(Character {
         id: verify.character_id,
         name: verify.character_name,
-        refresh_token: token.refresh_token,
+        refresh_token: Some(token.refresh_token),
         corporation_id: None,
         corporation_name: None,
     })

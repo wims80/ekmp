@@ -14,7 +14,7 @@ jobs:
   format:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
       - run: cargo +1.97.1 fmt --check
 
@@ -26,7 +26,7 @@ jobs:
       matrix:
         os: [ubuntu-22.04, windows-2022]
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
       - run: cargo +1.97.1 check --locked
       - run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings

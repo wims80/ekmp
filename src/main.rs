@@ -13,7 +13,9 @@ fn app_icon() -> eframe::Result<eframe::egui::IconData> {
 
 fn main() -> eframe::Result {
     let native_options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default().with_icon(app_icon()?),
+        viewport: eframe::egui::ViewportBuilder::default()
+            .with_app_id("akmp")
+            .with_icon(app_icon()?),
         ..Default::default()
     };
 

@@ -6,7 +6,7 @@
 
 #### TODO-DEVELOPMENT-002 — Rename the application to EVE Killmail Publisher
 
-**Status:** Pending GitHub repository work.
+**Status:** Complete.
 
 The local application identity has been renamed to **EVE Killmail Publisher**,
 with the lowercase shorthand and technical identifier `ekmp`. The Cargo
@@ -14,19 +14,13 @@ package, executable, user agent, window/application ID, storage location,
 development launcher, desktop-entry template, and documentation use the new
 identity.
 
-Configuration is now stored under `~/.config/ekmp/ekmp.json`. Configuration
-from the former `~/.config/akmp/akmp.json` location is intentionally left
-behind rather than migrated; the README documents the reconfiguration and
-sensitive-data implications.
+Configuration is stored under `~/.config/ekmp/ekmp.json`.
 
-Remaining work requiring GitHub access:
-
-- Create the new `ekmp` repository and move the project into it.
-- Update the repository URL, issue links, release artifacts, and repository
-  transition documentation.
-- From a clean checkout of the new repository, verify the branded window,
-  executable, launcher, and desktop entry, and search for unintended stale
-  identity references.
+Verified 2026-08-15: the repository remote is
+`https://github.com/wims80/ekmp`; repository-owned identity references use
+`ekmp` or EVE Killmail Publisher; and `cargo build` produces the `ekmp`
+executable. Direct GitHub reachability could not be checked from the local
+sandbox because DNS resolution for `github.com` is unavailable.
 
 **Acceptance criteria:** A clean checkout of the new repository builds an
 `ekmp` executable and desktop entry branded as EVE Killmail Publisher, with

@@ -46,12 +46,6 @@ immediately on the next startup. Full killmail records already reported to
 zKillboard are removed from the snapshot; only their compact status-cache
 entries are retained. Unreported results are checked again after 15 minutes.
 
-Configuration from the former application identity at
-`~/.config/akmp/akmp.json` is not migrated. It is intentionally left in place,
-and users upgrading from that identity must configure and authenticate `ekmp`
-again. Because the old file may contain refresh-token fallbacks, delete it only
-when it is no longer needed and can be removed securely.
-
 OAuth refresh tokens are stored in the operating system credential store:
 Secret Service on Linux (GNOME Keyring or KDE/KWallet), Keychain on macOS, and
 Credential Manager on Windows. Linux requires an unlocked Secret Service

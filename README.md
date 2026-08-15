@@ -51,3 +51,19 @@ minutes.
 cargo run
 cargo test
 ```
+
+### KDE/Wayland development launcher
+
+Wayland desktops resolve taskbar and launcher icons through a desktop-entry
+file, rather than the running application's window icon. To create a
+development launcher that uses the debug build and the repository icon, run
+this once from the repository:
+
+```sh
+scripts/setup-dev-launcher.sh
+```
+
+Then build normally with `cargo build` and launch **akmp (development)** from
+the application menu. Cargo always replaces `target/debug/akmp` in place, so
+the launcher does not need to be reinstalled after recompiling. Re-run the
+script only if the repository moves to a different directory.

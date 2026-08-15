@@ -1,9 +1,11 @@
 [Desktop Entry]
+Version=1.0
 Type=Application
-Name=EVE Killmail Publisher (development)
+Name=EVE Killmail Publisher
 Comment=Review and publish EVE Online killmails
-Exec=@REPO_ROOT@/target/debug/ekmp
-Icon=@REPO_ROOT@/assets/app-icon.png
+Exec=@EXEC_PATH@
+Icon=ekmp
 Terminal=false
 Categories=Utility;
 StartupNotify=true
+StartupWMClass=ekmp

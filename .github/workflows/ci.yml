@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  format:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
+      - run: cargo +1.97.1 fmt --check
+
+  verify:
+    name: Verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-2022]
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
+      - run: cargo +1.97.1 check --locked
+      - run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo +1.97.1 test --locked --all-features

@@ -152,24 +152,17 @@ No pending generic release TODOs.
 
 #### TODO-RELEASE-001 — Replace the development Wayland launcher
 
-**Status:** Pending before the first public release.
+**Status:** Implementation complete; pending manual release validation.
 
-The current KDE/Wayland launcher is intentionally development-only: it writes
-`~/.local/share/applications/ekmp.desktop` with absolute paths to this checkout
-and `target/debug/ekmp`.
+The checkout-specific development launcher has been removed. Release archives
+now contain a user-local installer that installs `ekmp` to `~/.local/bin`, a
+production `ekmp.desktop` launcher, and an `ekmp` hicolor icon. The installed
+desktop entry uses the production executable path and retains the
+`ekmp.desktop` filename required by eframe's Wayland application ID.
 
-Before release:
-
-- Remove `scripts/setup-dev-launcher.sh`.
-- Remove `assets/linux/ekmp.desktop.in`.
-- Replace the development-launcher section in `README.md` with release
-  installation/packaging instructions.
-- Add release packaging that installs a production `ekmp.desktop` entry and
-  appropriately named Linux `hicolor` icon assets.
-- Confirm the production desktop-entry filename remains `ekmp.desktop`, so it
-  matches eframe's Wayland application ID.
-- Keep `assets/app-icon.png` and the eframe viewport icon unless the release
-  packaging approach deliberately replaces their runtime use.
+Before the first published release, manually verify the archive on GNOME and
+KDE/Wayland, including launcher and taskbar icon resolution, installation,
+reinstallation, and uninstall preservation of `~/.config/ekmp`.
 
 **Acceptance criteria:** A package-installed release shows the `ekmp` icon in
 KDE/Wayland launchers and taskbars without any checkout-specific paths or

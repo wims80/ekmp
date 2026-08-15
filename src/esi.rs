@@ -3,10 +3,16 @@ use crate::{
     models::{Character, Killmail},
 };
 use reqwest::blocking::Client;
+use reqwest::header::USER_AGENT;
 use serde::Deserialize;
 use std::collections::HashMap;
 
 const ESI: &str = "https://esi.evetech.net/latest";
+const USER_AGENT_VALUE: &str = concat!(
+    "ekmp/",
+    env!("CARGO_PKG_VERSION"),
+    " (+https://github.com/wims80/ekmp)"
+);
 
 pub fn load_killmails(chars: &[Character]) -> Result<Vec<Killmail>, String> {
     let client = Client::new();
@@ -15,6 +21,7 @@ pub fn load_killmails(chars: &[Character]) -> Result<Vec<Killmail>, String> {
     for c in chars {
         let response: Vec<Recent> = client
             .get(format!("{ESI}/characters/{}/killmails/recent/", c.id))
+            .header(USER_AGENT, USER_AGENT_VALUE)
             .bearer_auth(auth::access_token(c)?)
             .send()
             .map_err(|e| e.to_string())?
@@ -35,6 +42,7 @@ pub fn load_killmails(chars: &[Character]) -> Result<Vec<Killmail>, String> {
                     "{ESI}/killmails/{}/{}",
                     recent.killmail_id, recent.killmail_hash
                 ))
+                .header(USER_AGENT, USER_AGENT_VALUE)
                 .send()
                 .map_err(|e| format!("Killmail {} request failed: {e}", recent.killmail_id))?
                 .error_for_status()
@@ -120,6 +128,7 @@ fn character_name(client: &Client, id: u64) -> Result<String, String> {
 fn character_info(client: &Client, id: u64) -> Result<CharacterInfo, String> {
     client
         .get(format!("{ESI}/characters/{id}/"))
+        .header(USER_AGENT, USER_AGENT_VALUE)
         .send()
         .map_err(|e| format!("Character name lookup failed for {id}: {e}"))?
         .error_for_status()
@@ -131,6 +140,7 @@ fn character_info(client: &Client, id: u64) -> Result<CharacterInfo, String> {
 fn corporation_name(client: &Client, id: u64) -> Result<String, String> {
     let info: Name = client
         .get(format!("{ESI}/corporations/{id}/"))
+        .header(USER_AGENT, USER_AGENT_VALUE)
         .send()
         .map_err(|e| format!("Corporation name lookup failed for {id}: {e}"))?
         .error_for_status()
@@ -142,6 +152,7 @@ fn corporation_name(client: &Client, id: u64) -> Result<String, String> {
 fn ship_name(client: &Client, id: u64) -> Result<String, String> {
     let info: Name = client
         .get(format!("{ESI}/universe/types/{id}/"))
+        .header(USER_AGENT, USER_AGENT_VALUE)
         .send()
         .map_err(|e| format!("Ship name lookup failed for type {id}: {e}"))?
         .error_for_status()
@@ -180,6 +191,12 @@ struct Name {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn user_agent_identifies_the_application_and_source() {
+        assert!(USER_AGENT_VALUE.starts_with("ekmp/"));
+        assert!(USER_AGENT_VALUE.contains("https://github.com/wims80/ekmp"));
+    }
 
     fn character(id: u64, name: &str) -> Character {
         Character {

@@ -2,6 +2,10 @@
 name = "ekmp"
 version = "0.1.0"
 edition = "2021"
+description = "A desktop utility for reviewing and explicitly publishing EVE Online killmails to zKillboard"
+license = "MIT"
+repository = "https://github.com/wims80/ekmp"
+rust-version = "1.97"
 
 [dependencies]
 base64 = "0.22"

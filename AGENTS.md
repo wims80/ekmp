@@ -49,6 +49,9 @@
   the common JSON fallback when a credential store fails; keep its work off the
   UI thread.
 - `src/storage.rs` owns local configuration loading and saving.
+- `packaging/linux/` owns files installed by the Linux release archive;
+  `scripts/package-linux.sh` and `scripts/package-windows.ps1` assemble the
+  platform release archives.
 - Keep blocking HTTP and sleeps off the egui UI thread.
 - Keep submission-policy functions centralized and covered by tests.
 - When architectural boundaries, module ownership, or important paths change,

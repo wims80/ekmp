@@ -27,18 +27,47 @@ anyway` button. Protected killmails are hidden from the recent-killmail list by
 default and can be displayed with the persisted `Show protected killmails`
 checkbox.
 
-## Setup
+## Installation
 
-Before building a release, create an application at the
-[EVE Developer Portal](https://developers.eveonline.com/), register
-`http://127.0.0.1:17842/callback` as its callback URL, and replace
-`REPLACE_WITH_YOUR_EVE_CLIENT_ID` in `src/auth.rs` with its client ID. EVE
-defines client IDs as public identifiers, so it does not need to be kept out of
-the repository or compiled application. Never add the client secret.
+Download the archive for your operating system from the
+[GitHub Releases](https://github.com/wims80/ekmp/releases) page. The initial
+release supports x86-64 Linux systems with glibc 2.35 or newer and x86-64
+Windows 10 or newer. macOS and Linux ARM64 are not supported.
 
-Users can then run the application, authenticate one or more characters, load
-recent killmails, and use an individual post button when desired. They do not
-need their own EVE developer application or credentials.
+### Linux
+
+Extract `ekmp-*-x86_64-unknown-linux-gnu.tar.gz`, enter the extracted
+directory, and run:
+
+```sh
+./install.sh
+```
+
+This installs `ekmp` in `~/.local/bin`, a launcher in
+`~/.local/share/applications`, and its icon in the matching `hicolor` icon
+directory. The launcher works with GNOME, KDE, and other desktops that follow
+the freedesktop desktop-entry standard. To remove the installed program while
+keeping your settings and cached data, run `./install.sh --uninstall` from the
+same release archive.
+
+You can also run the extracted `ekmp` executable directly; installing it is
+only needed for an application-menu and taskbar icon.
+
+### Windows
+
+Extract `ekmp-*-x86_64-pc-windows-msvc.zip` and run `ekmp.exe`. Windows may
+show a SmartScreen warning because the executable is not code signed. Verify
+the archive against the `SHA256SUMS` file attached to the same release before
+running it.
+
+### Authentication and local data
+
+The release already contains the EVE client ID and the required loopback
+callback registration. Users do not need to create an EVE developer
+application and must never enter, request, or share a client secret.
+
+After starting the application, authenticate one or more characters, load
+recent killmails, and use an individual post button when desired.
 
 The local configuration is stored in `~/.config/ekmp/ekmp.json` on Linux and
 `%APPDATA%\ekmp\ekmp.json` on Windows. It contains application preferences, a
@@ -57,6 +86,23 @@ platform, the application falls back to storing the affected refresh token in
 `ekmp.json` and displays a persistent security warning. Treat that file as
 sensitive whenever the warning is present. PKCE means a client secret is never
 needed or stored by this desktop application.
+
+Do not attach `ekmp.json`, refresh tokens, authorization URLs, or killmail
+hashes to public issue reports. Use GitHub's private vulnerability reporting
+for security-sensitive reports.
+
+## Support and contributions
+
+Report reproducible bugs through [GitHub Issues](https://github.com/wims80/ekmp/issues).
+Pull requests are welcome for review, but the repository has a single
+maintainer and does not grant write access to outside contributors.
+
+## EVE notice
+
+© 2014 CCP hf. All rights reserved. “EVE”, “EVE Online”, “CCP”, and all
+related logos and images are trademarks or registered trademarks of CCP hf.
+EVE Killmail Publisher is an independent, non-commercial third-party tool and
+is not affiliated with or endorsed by CCP hf.
 
 ## Development
 
@@ -89,20 +135,3 @@ It creates one temporary credential and deletes it before exiting:
 ```powershell
 cargo test --all-features windows_credential_manager_round_trip -- --ignored
 ```
-
-### KDE/Wayland development launcher
-
-Wayland desktops resolve taskbar and launcher icons through a desktop-entry
-file, rather than the running application's window icon. To create a
-development launcher that uses the debug build and the repository icon, run
-this once from the repository:
-
-```sh
-scripts/setup-dev-launcher.sh
-```
-
-Then build normally with `cargo build` and launch **EVE Killmail Publisher
-(development)** from the application menu. Cargo always replaces
-`target/debug/ekmp` in place, so
-the launcher does not need to be reinstalled after recompiling. Re-run the
-script only if the repository moves to a different directory.

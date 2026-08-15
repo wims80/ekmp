@@ -25,6 +25,34 @@ versions.
 executable and running-window surfaces display the supplied icon, and the
 existing user-facing workflow works without Linux-only assumptions.
 
+### TODO-DEVELOPMENT-005 — Support macOS builds and application icons
+
+**Status:** Pending.
+
+Make the application compile, run, and present correctly on supported macOS
+versions.
+
+- Establish and document the macOS development build workflow, including the
+  required Rust target, Xcode command-line tools, and app-bundle tooling.
+- Build and manually test the native application on macOS, including EVE SSO
+  browser authentication, local storage, and opening external links.
+- Use the clean-edge transparent 1024×1024 PNG as the master artwork.
+- Generate the standard macOS icon sizes (16, 32, 128, 256, 512, and 1024
+  pixels) and package them as an asset catalog or multi-resolution `.icns`
+  file.
+- Add the generated macOS icon resource to the future application bundle and
+  configure its bundle icon metadata.
+- Verify the icon in the Finder, Dock, application switcher, and a running
+  native window at common Retina and non-Retina scales.
+- Review the 16×16 and 32×32 variants for legibility of the diagonal slash and
+  ship silhouette; provide simplified artwork if they are unclear.
+- Add macOS-specific release/packaging documentation without changing the
+  Linux development-launcher workflow.
+
+**Acceptance criteria:** A clean macOS checkout can build and run akmp; its
+application bundle and running-window surfaces display the supplied icon, and
+the existing user-facing workflow works without Linux-only assumptions.
+
 ### TODO-DEVELOPMENT-003 — Test native credential storage on macOS and Windows
 
 **Status:** Pending.

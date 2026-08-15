@@ -1,4 +1,4 @@
-use super::{worker::unix_time, App, ProtectedVictimKind};
+use super::{worker::unix_time, App, ProtectedVictimKind, SessionReportStatus};
 use crate::killmail::{
     displayed_killmails, is_bulk_candidate, protected_victim_reasons, report_state, ReportState,
 };
@@ -149,6 +149,26 @@ impl eframe::App for App {
                     }
                 });
 
+            if !self.session_reports.is_empty() {
+                ui.separator();
+                ui.heading("Reported this session");
+                egui::ScrollArea::vertical()
+                    .id_salt("session_reports")
+                    .max_height(120.0)
+                    .show(ui, |ui| {
+                        for report in &self.session_reports {
+                            ui.horizontal(|ui| {
+                                let status = match report.status {
+                                    SessionReportStatus::Submitted => "Submitted",
+                                    SessionReportStatus::AlreadyPresent => "Already on zKillboard",
+                                };
+                                ui.label(format!("Killmail {} — {status}", report.killmail_id));
+                                ui.hyperlink_to("Open on zKillboard", &report.url);
+                            });
+                        }
+                    });
+            }
+
             ui.separator();
             ui.heading("Recent killmails");
             if self.killmails.is_empty() {
@@ -170,15 +190,6 @@ impl eframe::App for App {
                 .clicked()
             {
                 self.request_bulk_post();
-            }
-            if ui
-                .checkbox(
-                    &mut self.store.show_reported_killmails,
-                    "Show reported killmails",
-                )
-                .changed()
-            {
-                self.persist_or_log_error();
             }
             if ui
                 .checkbox(

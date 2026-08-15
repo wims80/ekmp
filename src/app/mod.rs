@@ -2,7 +2,10 @@ mod ui;
 mod worker;
 
 use crate::{
-    killmail::{character_summaries, report_state, submission_candidates, ReportState},
+    killmail::{
+        character_summaries, remove_reported_killmails, report_state, submission_candidates,
+        ReportState,
+    },
     models::{Killmail, Store, ZkillCacheEntry},
     storage,
 };
@@ -38,6 +41,18 @@ struct PostStats {
     failed: usize,
 }
 
+struct SessionReport {
+    killmail_id: u64,
+    url: String,
+    status: SessionReportStatus,
+}
+
+#[derive(Clone, Copy)]
+enum SessionReportStatus {
+    Submitted,
+    AlreadyPresent,
+}
+
 pub struct App {
     store: Store,
     killmails: Vec<Killmail>,
@@ -49,11 +64,14 @@ pub struct App {
     pending_bulk: Option<Vec<Killmail>>,
     new_protected_victim_id: String,
     new_protected_victim_kind: ProtectedVictimKind,
+    session_reports: Vec<SessionReport>,
 }
 
 impl App {
     pub fn new() -> Self {
-        let store = storage::load();
+        let mut store = storage::load();
+        let removed_reported =
+            remove_reported_killmails(&store.zkill_cache, &mut store.cached_killmails);
         let killmails = store.cached_killmails.clone();
         let mut app = Self {
             store,
@@ -66,7 +84,11 @@ impl App {
             pending_bulk: None,
             new_protected_victim_id: String::new(),
             new_protected_victim_kind: ProtectedVictimKind::Character,
+            session_reports: Vec::new(),
         };
+        if removed_reported > 0 {
+            app.persist_or_log_error();
+        }
         app.check_cached_statuses_on_startup();
         app
     }
@@ -271,6 +293,7 @@ impl App {
             WorkerEvent::KillmailsLoaded(killmails) => {
                 let count = killmails.len();
                 self.store.cached_killmails.clone_from(&killmails);
+                self.prune_persisted_reported_killmails();
                 self.killmails = killmails;
                 self.persist_or_log_error();
                 self.log(format!(
@@ -301,6 +324,7 @@ impl App {
                         },
                     );
                 }
+                self.prune_persisted_reported_killmails();
                 self.persist_or_log_error();
                 self.log(format!(
                     "Checked {character_name} on zKillboard: found {reported_count} reported killmails"
@@ -324,6 +348,18 @@ impl App {
                             checked_at: unix_time(),
                         },
                     );
+                    self.prune_persisted_reported_killmails();
+                    self.session_reports
+                        .retain(|report| report.killmail_id != killmail_id);
+                    self.session_reports.push(SessionReport {
+                        killmail_id,
+                        url: outcome.url.clone(),
+                        status: if outcome.new {
+                            SessionReportStatus::Submitted
+                        } else {
+                            SessionReportStatus::AlreadyPresent
+                        },
+                    });
                     self.persist_or_log_error();
                     if outcome.new {
                         self.post_stats.new += 1;
@@ -394,6 +430,10 @@ impl App {
         if let Err(error) = storage::persist(&self.store) {
             self.log(format!("Could not save local state: {error}"));
         }
+    }
+
+    fn prune_persisted_reported_killmails(&mut self) {
+        remove_reported_killmails(&self.store.zkill_cache, &mut self.store.cached_killmails);
     }
 
     fn log_character_summaries(&mut self) {

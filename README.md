@@ -9,6 +9,7 @@ and explicitly submitting selected killmails to zKillboard.
 - Multiple authenticated characters
 - Recent killmail retrieval from ESI
 - Cached zKillboard reporting status for each eligible killmail, refreshed for unknown entries at startup
+- Session-only results for explicitly submitted killmails, with zKillboard links
 - Configurable protected victim characters and corporations excluded from bulk posting
 - A separate `Post to zKillboard` button for each loaded killmail
 - Confirmed bulk submission of all unreported killmails
@@ -41,9 +42,10 @@ OAuth refresh tokens and should be treated as sensitive. PKCE means the client
 secret is not needed or stored by this desktop application. The current
 prototype does not encrypt the configuration file. It also contains a local
 snapshot of the most recently loaded killmails and their zKillboard status
-cache. The snapshot is displayed immediately on the next startup. Reported
-results are retained, while unreported results are checked again after 15
-minutes.
+cache. The snapshot is displayed immediately on the next startup. Full
+killmail records already reported to zKillboard are removed from the snapshot;
+only their compact status-cache entries are retained. Unreported results are
+checked again after 15 minutes.
 
 ## Development
 

@@ -1,4 +1,5 @@
-use crate::models::{Killmail, Store};
+use crate::models::{Killmail, Store, ZkillCacheEntry};
+use std::collections::HashMap;
 
 const NEGATIVE_CACHE_TTL_SECS: u64 = 15 * 60;
 
@@ -52,7 +53,7 @@ pub(crate) fn is_eligible_for_bulk_posting(store: &Store, mail: &Killmail) -> bo
 }
 
 fn is_killmail_visible(store: &Store, mail: &Killmail, now: u64) -> bool {
-    (store.show_reported_killmails || report_state(store, mail.id, now) != ReportState::Reported)
+    report_state(store, mail.id, now) != ReportState::Reported
         && (store.show_protected_killmails || is_eligible_for_bulk_posting(store, mail))
 }
 
@@ -61,18 +62,23 @@ pub(crate) fn displayed_killmails<'a>(
     killmails: &'a [Killmail],
     now: u64,
 ) -> Vec<&'a Killmail> {
-    let mut visible = killmails
+    killmails
         .iter()
         .filter(|mail| is_killmail_visible(store, mail, now))
-        .collect::<Vec<_>>();
-    if store.show_reported_killmails {
-        visible.sort_by_key(|mail| match report_state(store, mail.id, now) {
-            ReportState::Unreported => 0,
-            ReportState::Unknown => 1,
-            ReportState::Reported => 2,
-        });
-    }
-    visible
+        .collect()
+}
+
+pub(crate) fn remove_reported_killmails(
+    zkill_cache: &HashMap<u64, ZkillCacheEntry>,
+    killmails: &mut Vec<Killmail>,
+) -> usize {
+    let previous_len = killmails.len();
+    killmails.retain(|mail| {
+        !zkill_cache
+            .get(&mail.id)
+            .is_some_and(|entry| entry.reported)
+    });
+    previous_len - killmails.len()
 }
 
 pub(crate) fn report_state(store: &Store, killmail_id: u64, now: u64) -> ReportState {
@@ -345,14 +351,12 @@ mod tests {
         assert!(is_killmail_visible(&store, &protected, 100));
         assert!(!is_killmail_visible(&store, &reported, 100));
 
-        store.show_reported_killmails = true;
-        assert!(is_killmail_visible(&store, &reported, 100));
+        assert!(!is_killmail_visible(&store, &reported, 100));
     }
 
     #[test]
-    fn displaying_reported_killmails_orders_unreported_first() {
+    fn reported_killmails_are_removed_from_cached_snapshots() {
         let mut store = store();
-        store.show_reported_killmails = true;
         for id in [12, 14] {
             store.zkill_cache.insert(
                 id,
@@ -371,7 +375,7 @@ mod tests {
                 },
             );
         }
-        let killmails = vec![
+        let mut killmails = vec![
             mail(10, &[1], None),
             mail(11, &[1], None),
             mail(12, &[1], None),
@@ -379,12 +383,11 @@ mod tests {
             mail(14, &[1], None),
         ];
 
-        let ids = displayed_killmails(&store, &killmails, 100)
-            .into_iter()
-            .map(|mail| mail.id)
-            .collect::<Vec<_>>();
+        let removed = remove_reported_killmails(&store.zkill_cache, &mut killmails);
+        let ids = killmails.iter().map(|mail| mail.id).collect::<Vec<_>>();
 
-        assert_eq!(ids, vec![12, 14, 11, 10, 13]);
+        assert_eq!(removed, 2);
+        assert_eq!(ids, vec![11, 12, 14]);
     }
 
     #[test]

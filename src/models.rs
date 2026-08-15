@@ -7,8 +7,6 @@ pub struct Store {
     #[serde(default)]
     pub zkill_cache: HashMap<u64, ZkillCacheEntry>,
     #[serde(default)]
-    pub show_reported_killmails: bool,
-    #[serde(default)]
     pub show_protected_killmails: bool,
     #[serde(default)]
     pub cached_killmails: Vec<Killmail>,
@@ -79,7 +77,6 @@ mod tests {
 
         assert_eq!(store.characters.len(), 1);
         assert!(store.zkill_cache.is_empty());
-        assert!(!store.show_reported_killmails);
         assert!(!store.show_protected_killmails);
         assert!(store.cached_killmails.is_empty());
         assert!(store.manually_protected_characters.is_empty());
@@ -111,7 +108,6 @@ mod tests {
     #[test]
     fn store_round_trips_cache_entries() {
         let mut store = Store {
-            show_reported_killmails: true,
             show_protected_killmails: true,
             cached_killmails: vec![Killmail {
                 id: 7,
@@ -150,7 +146,6 @@ mod tests {
         let entry = restored.zkill_cache[&42];
         assert!(entry.reported);
         assert_eq!(entry.checked_at, 123);
-        assert!(restored.show_reported_killmails);
         assert!(restored.show_protected_killmails);
         assert_eq!(restored.cached_killmails.len(), 1);
         assert_eq!(restored.cached_killmails[0].id, 7);

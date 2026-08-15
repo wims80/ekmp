@@ -28,7 +28,7 @@ repository links and release artifacts using the final identity.
 
 #### TODO-DEVELOPMENT-004 — Make status information understandable to users
 
-**Status:** Pending.
+**Status:** Complete.
 
 Revise the Status and Activity text so it explains the result in terms a user
 can act on, without requiring knowledge of ESI, zKillboard lookup categories,

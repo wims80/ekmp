@@ -1,6 +1,7 @@
 use super::{worker::unix_time, App, ProtectedVictimKind, SessionReportStatus};
 use crate::killmail::{
-    displayed_killmails, is_bulk_candidate, protected_victim_reasons, report_state, ReportState,
+    displayed_killmails, is_bulk_candidate, posting_summary, protected_victim_reasons,
+    report_state, ReportState,
 };
 use eframe::egui;
 use std::{collections::HashSet, time::Duration};
@@ -155,16 +156,59 @@ impl eframe::App for App {
             }
 
             ui.separator();
-            ui.heading("Status");
-            ui.label(&self.latest_status);
-            ui.label("Activity");
-            egui::ScrollArea::vertical()
-                .max_height(140.0)
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    for message in &self.status_history {
-                        ui.label(message);
+            ui.heading("Posting status");
+            if self.killmails.is_empty() {
+                ui.label("Load recent killmails to see what can be posted.");
+            } else {
+                let summary = posting_summary(&self.store, &self.killmails, unix_time());
+                ui.label(format!(
+                    "{} killmail{} {} eligible for bulk posting.",
+                    summary.eligible_for_bulk_posting,
+                    if summary.eligible_for_bulk_posting == 1 {
+                        ""
+                    } else {
+                        "s"
+                    },
+                    if summary.eligible_for_bulk_posting == 1 {
+                        "is"
+                    } else {
+                        "are"
                     }
+                ));
+                ui.label(format!(
+                    "{} protected killmail{} {} excluded from bulk posting.",
+                    summary.protected,
+                    if summary.protected == 1 { "" } else { "s" },
+                    if summary.protected == 1 { "is" } else { "are" }
+                ));
+                for (reason, count) in summary.protection_reasons {
+                    ui.label(format!(
+                        "  {count} protected by {reason}",
+                    ));
+                }
+                if summary.awaiting_status > 0 {
+                    ui.label(format!(
+                        "{} unprotected killmail{} still need{} a status check before posting.",
+                        summary.awaiting_status,
+                        if summary.awaiting_status == 1 { "" } else { "s" },
+                        if summary.awaiting_status == 1 { "s" } else { "" }
+                    ));
+                } else if summary.eligible_for_bulk_posting == 0 && summary.protected == 0 {
+                    ui.label("No unreported killmails need action.");
+                }
+            }
+            egui::CollapsingHeader::new("Activity details")
+                .default_open(false)
+                .show(ui, |ui| {
+                    ui.label(&self.latest_status);
+                    egui::ScrollArea::vertical()
+                        .max_height(140.0)
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            for message in &self.status_history {
+                                ui.label(message);
+                            }
+                        });
                 });
 
             if !self.session_reports.is_empty() {

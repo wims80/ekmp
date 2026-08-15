@@ -1,5 +1,5 @@
 use crate::models::{Killmail, Store, ZkillCacheEntry};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
 const NEGATIVE_CACHE_TTL_SECS: u64 = 15 * 60;
 
@@ -8,6 +8,14 @@ pub(crate) enum ReportState {
     Reported,
     Unreported,
     Unknown,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct PostingSummary {
+    pub eligible_for_bulk_posting: usize,
+    pub protected: usize,
+    pub awaiting_status: usize,
+    pub protection_reasons: Vec<(String, usize)>,
 }
 
 pub(crate) fn protected_victim_reasons(store: &Store, mail: &Killmail) -> Vec<String> {
@@ -141,6 +149,39 @@ pub(crate) fn is_bulk_candidate(store: &Store, mail: &Killmail, now: u64) -> boo
         && report_state(store, mail.id, now) == ReportState::Unreported
 }
 
+pub(crate) fn posting_summary(store: &Store, killmails: &[Killmail], now: u64) -> PostingSummary {
+    let mut summary = PostingSummary {
+        eligible_for_bulk_posting: 0,
+        protected: 0,
+        awaiting_status: 0,
+        protection_reasons: Vec::new(),
+    };
+    let mut protection_reasons = BTreeMap::new();
+
+    for mail in killmails {
+        if report_state(store, mail.id, now) == ReportState::Reported {
+            continue;
+        }
+
+        let reasons = protected_victim_reasons(store, mail);
+        if reasons.is_empty() {
+            match report_state(store, mail.id, now) {
+                ReportState::Unreported => summary.eligible_for_bulk_posting += 1,
+                ReportState::Unknown => summary.awaiting_status += 1,
+                ReportState::Reported => {}
+            }
+        } else {
+            summary.protected += 1;
+            for reason in reasons {
+                *protection_reasons.entry(reason).or_default() += 1;
+            }
+        }
+    }
+
+    summary.protection_reasons = protection_reasons.into_iter().collect();
+    summary
+}
+
 pub(crate) fn submission_candidates(
     store: &Store,
     mut mails: Vec<Killmail>,
@@ -151,59 +192,6 @@ pub(crate) fn submission_candidates(
         mails.retain(|mail| is_bulk_candidate(store, mail, now));
     }
     mails
-}
-
-pub(crate) fn character_summaries(store: &Store, killmails: &[Killmail], now: u64) -> Vec<String> {
-    store
-        .characters
-        .iter()
-        .map(|character| {
-            let eligible = killmails
-                .iter()
-                .filter(|mail| {
-                    is_eligible_for_bulk_posting(store, mail)
-                        && mail
-                            .sources
-                            .iter()
-                            .any(|source| source.id == character.id)
-                })
-                .collect::<Vec<_>>();
-            if eligible.is_empty() {
-                return format!(
-                    "{} has no recent killmails eligible for bulk posting",
-                    character.name
-                );
-            }
-            let unknown = eligible
-                .iter()
-                .filter(|mail| report_state(store, mail.id, now) == ReportState::Unknown)
-                .count();
-            if unknown > 0 {
-                return format!(
-                    "Could not determine zKillboard status for {unknown} of {} eligible recent killmails for {}",
-                    eligible.len(),
-                    character.name
-                );
-            }
-            let unreported = eligible
-                .iter()
-                .filter(|mail| report_state(store, mail.id, now) == ReportState::Unreported)
-                .count();
-            if unreported == 0 {
-                format!(
-                    "All {} eligible recent killmails for {} are reported to zKillboard",
-                    eligible.len(),
-                    character.name
-                )
-            } else {
-                format!(
-                    "{} has {unreported} of {} eligible recent killmails still unreported",
-                    character.name,
-                    eligible.len()
-                )
-            }
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -268,26 +256,12 @@ mod tests {
     }
 
     #[test]
-    fn summaries_exclude_authenticated_character_losses() {
+    fn posting_summary_explains_bulk_eligibility_and_protection() {
         let mut store = store();
-        store.zkill_cache.insert(
-            10,
-            ZkillCacheEntry {
-                reported: true,
-                checked_at: 0,
-            },
-        );
-        let killmails = vec![mail(10, &[1], None), mail(11, &[1], Some(1))];
-
-        assert_eq!(
-            character_summaries(&store, &killmails, 1),
-            vec!["All 1 eligible recent killmails for Pilot 1 are reported to zKillboard"]
-        );
-    }
-
-    #[test]
-    fn summaries_report_partial_and_unknown_states() {
-        let mut store = store();
+        store.manually_protected_characters.push(ProtectedVictim {
+            id: 2,
+            name: "Protected Pilot".into(),
+        });
         store.zkill_cache.insert(
             10,
             ZkillCacheEntry {
@@ -295,20 +269,34 @@ mod tests {
                 checked_at: 100,
             },
         );
-        let killmails = vec![mail(10, &[1], None), mail(11, &[1], None)];
-
-        assert!(character_summaries(&store, &killmails, 100)[0]
-            .starts_with("Could not determine zKillboard status for 1 of 2"));
         store.zkill_cache.insert(
-            11,
+            14,
             ZkillCacheEntry {
                 reported: true,
                 checked_at: 100,
             },
         );
+        let mut protected_corporation = mail(13, &[1], None);
+        protected_corporation.victim_corporation_id = Some(100);
+        let killmails = vec![
+            mail(10, &[1], None),
+            mail(11, &[1], None),
+            mail(12, &[1], Some(2)),
+            protected_corporation,
+            mail(14, &[1], Some(2)),
+        ];
+
         assert_eq!(
-            character_summaries(&store, &killmails, 100),
-            vec!["Pilot 1 has 1 of 2 eligible recent killmails still unreported"]
+            posting_summary(&store, &killmails, 100),
+            PostingSummary {
+                eligible_for_bulk_posting: 1,
+                protected: 2,
+                awaiting_status: 1,
+                protection_reasons: vec![
+                    ("authenticated corporation Pilot Corp".into(), 1),
+                    ("character Protected Pilot".into(), 1),
+                ],
+            }
         );
     }
 

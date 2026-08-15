@@ -3,9 +3,8 @@ mod worker;
 
 use crate::{
     killmail::{
-        character_summaries, remove_killmails_for_removed_character,
-        remove_killmails_without_authenticated_sources, remove_reported_killmails, report_state,
-        submission_candidates, ReportState,
+        remove_killmails_for_removed_character, remove_killmails_without_authenticated_sources,
+        remove_reported_killmails, report_state, submission_candidates, ReportState,
     },
     models::{Character, Killmail, Store, ZkillCacheEntry},
     storage,
@@ -85,8 +84,8 @@ impl App {
         let mut app = Self {
             store,
             killmails,
-            latest_status: "Ready".into(),
-            status_history: VecDeque::from(["Ready".into()]),
+            latest_status: "Ready to load recent killmails.".into(),
+            status_history: VecDeque::from(["Ready to load recent killmails.".into()]),
             event_rx: None,
             operation: None,
             post_stats: PostStats::default(),
@@ -203,7 +202,7 @@ impl App {
         let store = self.store.clone();
         let (tx, rx) = mpsc::channel();
         thread::spawn(move || worker::load_killmails_and_statuses(store, tx));
-        self.log("Loading recent killmails from ESI...");
+        self.log("Loading recent killmails...");
         self.event_rx = Some(rx);
         self.operation = Some(Operation::Load);
     }
@@ -381,10 +380,7 @@ impl App {
                 reported_ids,
                 checked_at,
             } => {
-                let reported_count = checked_ids
-                    .iter()
-                    .filter(|id| reported_ids.contains(id))
-                    .count();
+                let checked_count = checked_ids.len();
                 for id in checked_ids {
                     let already_reported = self
                         .store
@@ -401,9 +397,7 @@ impl App {
                 }
                 self.prune_persisted_reported_killmails();
                 self.persist_or_log_error();
-                self.log(format!(
-                    "Checked {character_name} on zKillboard: found {reported_count} reported killmails"
-                ));
+                self.log(format!("Completed status check for {character_name} ({checked_count} killmails checked)"));
             }
             WorkerEvent::LookupFailed {
                 character_name,
@@ -481,20 +475,16 @@ impl App {
             Some(Operation::MigrateRefreshTokens) => self.check_cached_statuses_on_startup(),
             Some(Operation::RemoveCharacter) => {}
             Some(Operation::AddProtectedVictim) => {}
-            Some(Operation::CheckCachedStatuses) | Some(Operation::Load) => {
-                self.log_character_summaries();
-            }
+            Some(Operation::CheckCachedStatuses) | Some(Operation::Load) => {}
             Some(Operation::Post { bulk }) => {
-                self.log_character_summaries();
                 let label = if bulk {
                     "Bulk submission"
                 } else {
                     "Submission"
                 };
                 self.log(format!(
-                    "{label} complete: {} new, {} already present, {} failed out of {}",
-                    self.post_stats.new,
-                    self.post_stats.existing,
+                    "{label} complete: {} requests completed, {} failed out of {}",
+                    self.post_stats.new + self.post_stats.existing,
                     self.post_stats.failed,
                     self.post_stats.total
                 ));
@@ -511,12 +501,5 @@ impl App {
 
     fn prune_persisted_reported_killmails(&mut self) {
         remove_reported_killmails(&self.store.zkill_cache, &mut self.store.cached_killmails);
-    }
-
-    fn log_character_summaries(&mut self) {
-        let messages = character_summaries(&self.store, &self.killmails, unix_time());
-        for message in messages {
-            self.log(message);
-        }
     }
 }

@@ -13,6 +13,7 @@ and explicitly submitting selected killmails to zKillboard.
 - Cached zKillboard reporting status for each eligible killmail, refreshed for unknown entries at startup
 - Session-only results for explicitly submitted killmails, with zKillboard links
 - Configurable protected victim characters and corporations excluded from bulk posting
+- A posting summary showing bulk-eligible, protected, and still-unchecked killmails
 - A separate `Post to zKillboard` button for each loaded killmail
 - Confirmed bulk submission of all unreported killmails
 

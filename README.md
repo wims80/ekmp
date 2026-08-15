@@ -40,12 +40,13 @@ Users can then run the application, authenticate one or more characters, load
 recent killmails, and use an individual post button when desired. They do not
 need their own EVE developer application or credentials.
 
-The local configuration is stored in `~/.config/ekmp/ekmp.json`. It contains
-application preferences, a local snapshot of the most recently loaded
-killmails, and their zKillboard status cache. The snapshot is displayed
-immediately on the next startup. Full killmail records already reported to
-zKillboard are removed from the snapshot; only their compact status-cache
-entries are retained. Unreported results are checked again after 15 minutes.
+The local configuration is stored in `~/.config/ekmp/ekmp.json` on Linux and
+`%APPDATA%\ekmp\ekmp.json` on Windows. It contains application preferences, a
+local snapshot of the most recently loaded killmails, and their zKillboard
+status cache. The snapshot is displayed immediately on the next startup. Full
+killmail records already reported to zKillboard are removed from the snapshot;
+only their compact status-cache entries are retained. Unreported results are
+checked again after 15 minutes.
 
 OAuth refresh tokens are stored in the operating system credential store:
 Secret Service on Linux (GNOME Keyring or KDE/KWallet), Keychain on macOS, and
@@ -62,6 +63,31 @@ needed or stored by this desktop application.
 ```sh
 cargo run
 cargo test
+```
+
+### Windows
+
+Install Rust with the default `x86_64-pc-windows-msvc` toolchain and install
+the Visual Studio Build Tools with the **Desktop development with C++**
+workload, including a Windows SDK. The build automatically locates the Windows
+SDK resource compiler when it is not already on `PATH`:
+
+```powershell
+cargo run
+cargo build --release
+```
+
+The release executable is `target\release\ekmp.exe`. The build embeds
+`assets/windows/app-icon.ico` as its executable icon; the running window uses
+the embedded PNG icon. Windows settings and cached state are saved beneath
+`%APPDATA%\ekmp`.
+
+To verify Windows Credential Manager without using an EVE refresh token, run
+the opt-in integration test from an interactive, signed-in PowerShell session.
+It creates one temporary credential and deletes it before exiting:
+
+```powershell
+cargo test --all-features windows_credential_manager_round_trip -- --ignored
 ```
 
 ### KDE/Wayland development launcher

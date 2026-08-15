@@ -23,16 +23,28 @@ fn store_path() -> Result<PathBuf, String> {
 }
 
 fn config_dir() -> Result<PathBuf, String> {
+    #[cfg(windows)]
+    let base = std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .ok_or("APPDATA is not set")?;
+
+    #[cfg(not(windows))]
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .ok_or("HOME is not set")?;
-    let path = config_dir_path(home);
+
+    #[cfg(windows)]
+    let path = config_dir_path(base);
+
+    #[cfg(not(windows))]
+    let path = config_dir_path(home.join(".config"));
+
     fs::create_dir_all(&path).map_err(|e| e.to_string())?;
     Ok(path)
 }
 
-fn config_dir_path(home: PathBuf) -> PathBuf {
-    home.join(".config").join(CONFIG_DIR_NAME)
+fn config_dir_path(base: PathBuf) -> PathBuf {
+    base.join(CONFIG_DIR_NAME)
 }
 
 #[cfg(test)]
@@ -40,9 +52,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn store_uses_the_ekmp_configuration_location() {
-        let path = config_dir_path(PathBuf::from("/home/tester")).join(STORE_FILE_NAME);
+    #[cfg(not(windows))]
+    fn store_uses_the_unix_configuration_location() {
+        let path = config_dir_path(PathBuf::from("/home/tester/.config")).join(STORE_FILE_NAME);
 
         assert_eq!(path, PathBuf::from("/home/tester/.config/ekmp/ekmp.json"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn store_uses_the_windows_roaming_app_data_location() {
+        let path = config_dir_path(PathBuf::from(r"C:\Users\tester\AppData\Roaming"))
+            .join(STORE_FILE_NAME);
+
+        assert_eq!(
+            path,
+            PathBuf::from(r"C:\Users\tester\AppData\Roaming\ekmp\ekmp.json")
+        );
     }
 }

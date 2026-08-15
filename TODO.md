@@ -14,7 +14,8 @@ package, executable, user agent, window/application ID, storage location,
 development launcher, desktop-entry template, and documentation use the new
 identity.
 
-Configuration is stored under `~/.config/ekmp/ekmp.json`.
+Configuration is stored under `~/.config/ekmp/ekmp.json` on Linux and
+`%APPDATA%\ekmp\ekmp.json` on Windows.
 
 Verified 2026-08-15: the repository remote is
 `https://github.com/wims80/ekmp`; repository-owned identity references use
@@ -55,22 +56,21 @@ No pending Linux development TODOs.
 
 #### TODO-DEVELOPMENT-001 — Support Windows builds and application icons
 
-**Status:** Pending.
+**Status:** Pending manual validation.
 
-Make the application compile, run, and present correctly on supported Windows
-versions.
+Windows builds use the default `x86_64-pc-windows-msvc` Rust target and Visual
+Studio Build Tools with the Desktop development with C++ workload and a Windows
+SDK. The build locates the Windows resource compiler to embed
+`assets/windows/app-icon.ico` in `ekmp.exe`; `assets/app-icon.png` remains the
+viewport icon. Local configuration is stored in `%APPDATA%\ekmp\ekmp.json`,
+which avoids the Unix-only `HOME` assumption.
 
-- Establish and document the Windows development build workflow, including the
-  required Rust target and any native build tools.
-- Build and manually test the native application on Windows, including EVE SSO
-  browser authentication, local storage, and opening external links.
-- Extract the supplied `windows/app-icon.ico` into a repository-owned Windows
-  asset and embed it as the executable icon so Explorer, shortcuts, and pinned
-  taskbar entries use the ekmp artwork.
-- Retain the embedded PNG viewport icon for the live window, Alt-Tab, and
-  taskbar icon; verify it is shown correctly on Windows at common DPI scales.
-- Add Windows-specific release/packaging documentation without changing the
-  Linux development-launcher workflow.
+Verified 2026-08-15: `cargo check`, Clippy, tests, and a release build passed
+on Windows; the release executable contains the supplied icon. Before closing
+this TODO, manually test EVE SSO browser authentication, local-state
+persistence, external-link opening, and the live viewport icon at common DPI
+scales. Credential Manager verification remains tracked separately in
+TODO-DEVELOPMENT-003-WINDOWS.
 
 **Acceptance criteria:** A clean Windows checkout can build and run ekmp; its
 executable and running-window surfaces display the supplied icon, and the
@@ -78,16 +78,21 @@ existing user-facing workflow works without Linux-only assumptions.
 
 #### TODO-DEVELOPMENT-003-WINDOWS — Test Credential Manager storage
 
-**Status:** Pending.
+**Status:** Complete.
 
-Manually integration-test refresh-token storage using Windows Credential
-Manager.
+Windows Credential Manager storage is exercised by the opt-in
+`windows_credential_manager_round_trip` test. It creates, reads, and deletes a
+uniquely named temporary credential without accessing an EVE refresh token;
+run it from an interactive, signed-in PowerShell session.
 
-- Authenticate a character and verify its refresh token is stored in
-  Credential Manager rather than `ekmp.json`.
-- Restart the application and verify token retrieval and ESI requests succeed.
-- Temporarily make Credential Manager unavailable or deny access; verify the
-  application uses the JSON fallback and persistent security warning.
+Verified 2026-08-15: the persisted record for Miws Vokan has no JSON
+refresh-token fallback, confirming its refresh token was accepted by the
+system credential store. The application already covers the storage-failure
+branch with `failed_token_migration_keeps_the_json_fallback_and_warns`.
+
+Verified 2026-08-15: interactive Windows testing confirmed Credential Manager
+storage and the application workflow. The opt-in round-trip test remains
+available for future environment checks.
 
 **Acceptance criteria:** Windows uses Credential Manager during normal
 operation and exhibits the documented fallback behavior when it fails.

@@ -37,4 +37,31 @@ mod tests {
         assert_eq!(account(42), "eve-character-42");
         assert_ne!(account(42), account(43));
     }
+
+    #[cfg(windows)]
+    #[test]
+    #[ignore = "writes a temporary entry to the user's Windows Credential Manager"]
+    fn windows_credential_manager_round_trip() {
+        let character_id = u64::MAX - u64::from(std::process::id());
+        let token = "ekmp-windows-credential-manager-test";
+        let _cleanup = CredentialCleanup(character_id);
+
+        save_refresh_token(character_id, token)
+            .expect("Windows Credential Manager should accept a test credential");
+        assert_eq!(
+            load_refresh_token(character_id)
+                .expect("Windows Credential Manager should return the test credential"),
+            token
+        );
+    }
+
+    #[cfg(windows)]
+    struct CredentialCleanup(u64);
+
+    #[cfg(windows)]
+    impl Drop for CredentialCleanup {
+        fn drop(&mut self) {
+            let _ = delete_refresh_token(self.0);
+        }
+    }
 }

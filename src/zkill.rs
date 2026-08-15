@@ -15,8 +15,16 @@ pub struct PostOutcome {
 }
 
 pub fn character_kill_ids(character_id: u64) -> Result<HashSet<u64>, String> {
+    character_mail_ids(character_id, "kills")
+}
+
+pub fn character_loss_ids(character_id: u64) -> Result<HashSet<u64>, String> {
+    character_mail_ids(character_id, "losses")
+}
+
+fn character_mail_ids(character_id: u64, mail_type: &str) -> Result<HashSet<u64>, String> {
     let response = Client::new()
-        .get(format!("{API}/kills/characterID/{character_id}/"))
+        .get(format!("{API}/{mail_type}/characterID/{character_id}/"))
         .header(USER_AGENT, USER_AGENT_VALUE)
         .header(ACCEPT_ENCODING, "gzip")
         .send()

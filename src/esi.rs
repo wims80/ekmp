@@ -58,12 +58,31 @@ pub fn load_killmails(chars: &[Character]) -> Result<Vec<Killmail>, String> {
                 hash: recent.killmail_hash,
                 sources: pending.sources,
                 victim_id: detail.victim.character_id,
+                victim_corporation_id: detail.victim.corporation_id,
                 victim,
                 ship,
                 time: detail.killmail_time,
             })
         })
         .collect()
+}
+
+pub fn refresh_character_affiliation(character: &mut Character) -> Result<(), String> {
+    let client = Client::new();
+    let info = character_info(&client, character.id)?;
+    let corporation_name = corporation_name(&client, info.corporation_id)?;
+    character.name = info.name;
+    character.corporation_id = Some(info.corporation_id);
+    character.corporation_name = Some(corporation_name);
+    Ok(())
+}
+
+pub fn resolve_character_name(id: u64) -> Result<String, String> {
+    character_info(&Client::new(), id).map(|info| info.name)
+}
+
+pub fn resolve_corporation_name(id: u64) -> Result<String, String> {
+    corporation_name(&Client::new(), id)
 }
 
 fn add_pending(
@@ -95,14 +114,29 @@ struct PendingKillmail {
 }
 
 fn character_name(client: &Client, id: u64) -> Result<String, String> {
-    let info: Name = client
+    character_info(client, id).map(|info| info.name)
+}
+
+fn character_info(client: &Client, id: u64) -> Result<CharacterInfo, String> {
+    client
         .get(format!("{ESI}/characters/{id}/"))
         .send()
         .map_err(|e| format!("Character name lookup failed for {id}: {e}"))?
         .error_for_status()
         .map_err(|e| format!("Character name lookup failed for {id}: {e}"))?
         .json()
-        .map_err(|e| format!("Character name response invalid for {id}: {e}"))?;
+        .map_err(|e| format!("Character response invalid for {id}: {e}"))
+}
+
+fn corporation_name(client: &Client, id: u64) -> Result<String, String> {
+    let info: Name = client
+        .get(format!("{ESI}/corporations/{id}/"))
+        .send()
+        .map_err(|e| format!("Corporation name lookup failed for {id}: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("Corporation name lookup failed for {id}: {e}"))?
+        .json()
+        .map_err(|e| format!("Corporation name response invalid for {id}: {e}"))?;
     Ok(info.name)
 }
 fn ship_name(client: &Client, id: u64) -> Result<String, String> {
@@ -130,7 +164,13 @@ struct Detail {
 #[derive(Deserialize)]
 struct Victim {
     character_id: Option<u64>,
+    corporation_id: Option<u64>,
     ship_type_id: Option<u64>,
+}
+#[derive(Deserialize)]
+struct CharacterInfo {
+    name: String,
+    corporation_id: u64,
 }
 #[derive(Deserialize)]
 struct Name {
@@ -146,6 +186,8 @@ mod tests {
             id,
             name: name.into(),
             refresh_token: String::new(),
+            corporation_id: None,
+            corporation_name: None,
         }
     }
 

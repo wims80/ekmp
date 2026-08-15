@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Store {
     pub characters: Vec<Character>,
     #[serde(default)]
@@ -9,7 +9,13 @@ pub struct Store {
     #[serde(default)]
     pub show_reported_killmails: bool,
     #[serde(default)]
+    pub show_protected_killmails: bool,
+    #[serde(default)]
     pub cached_killmails: Vec<Killmail>,
+    #[serde(default)]
+    pub manually_protected_characters: Vec<ProtectedVictim>,
+    #[serde(default)]
+    pub manually_protected_corporations: Vec<ProtectedVictim>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -29,6 +35,16 @@ pub struct Character {
     pub id: u64,
     pub name: String,
     pub refresh_token: String,
+    #[serde(default)]
+    pub corporation_id: Option<u64>,
+    #[serde(default)]
+    pub corporation_name: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProtectedVictim {
+    pub id: u64,
+    pub name: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -37,6 +53,8 @@ pub struct Killmail {
     pub hash: String,
     pub sources: Vec<CharacterSource>,
     pub victim_id: Option<u64>,
+    #[serde(default)]
+    pub victim_corporation_id: Option<u64>,
     pub victim: String,
     pub ship: String,
     pub time: String,
@@ -62,7 +80,11 @@ mod tests {
         assert_eq!(store.characters.len(), 1);
         assert!(store.zkill_cache.is_empty());
         assert!(!store.show_reported_killmails);
+        assert!(!store.show_protected_killmails);
         assert!(store.cached_killmails.is_empty());
+        assert!(store.manually_protected_characters.is_empty());
+        assert!(store.manually_protected_corporations.is_empty());
+        assert_eq!(store.characters[0].corporation_id, None);
     }
 
     #[test]
@@ -90,6 +112,7 @@ mod tests {
     fn store_round_trips_cache_entries() {
         let mut store = Store {
             show_reported_killmails: true,
+            show_protected_killmails: true,
             cached_killmails: vec![Killmail {
                 id: 7,
                 hash: "hash".into(),
@@ -98,12 +121,21 @@ mod tests {
                     name: "Pilot".into(),
                 }],
                 victim_id: Some(2),
+                victim_corporation_id: Some(3),
                 victim: "Victim".into(),
                 ship: "Ship".into(),
                 time: "Time".into(),
             }],
             ..Store::default()
         };
+        store.manually_protected_characters.push(ProtectedVictim {
+            id: 8,
+            name: "Protected Pilot".into(),
+        });
+        store.manually_protected_corporations.push(ProtectedVictim {
+            id: 9,
+            name: "Protected Corp".into(),
+        });
         store.zkill_cache.insert(
             42,
             ZkillCacheEntry {
@@ -119,7 +151,10 @@ mod tests {
         assert!(entry.reported);
         assert_eq!(entry.checked_at, 123);
         assert!(restored.show_reported_killmails);
+        assert!(restored.show_protected_killmails);
         assert_eq!(restored.cached_killmails.len(), 1);
         assert_eq!(restored.cached_killmails[0].id, 7);
+        assert_eq!(restored.manually_protected_characters[0].id, 8);
+        assert_eq!(restored.manually_protected_corporations[0].id, 9);
     }
 }

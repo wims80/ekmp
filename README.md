@@ -8,11 +8,20 @@ and explicitly submitting selected killmails to zKillboard.
 - EVE SSO PKCE authentication with the `esi-killmails.read_killmails.v1` scope
 - Multiple authenticated characters
 - Recent killmail retrieval from ESI
-- Cached zKillboard reporting status for each eligible killmail
+- Cached zKillboard reporting status for each eligible killmail, refreshed for unknown entries at startup
+- Configurable protected victim characters and corporations excluded from bulk posting
 - A separate `Post to zKillboard` button for each loaded killmail
 - Confirmed bulk submission of all unreported killmails
 
 Killmails are never submitted automatically.
+
+Authenticated characters and their corporations are automatically protected.
+Additional victim character and corporation IDs can be added under `Protected
+victims`. Killmails involving protected victims are excluded from bulk
+submission but can still be submitted individually with the explicit `Post
+anyway` button. Protected killmails are hidden from the recent-killmail list by
+default and can be displayed with the persisted `Show protected killmails`
+checkbox.
 
 ## Setup
 

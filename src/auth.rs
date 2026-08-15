@@ -106,6 +106,8 @@ fn exchange_code(verifier: &str, code: &str) -> Result<Character, String> {
         id: verify.character_id,
         name: verify.character_name,
         refresh_token: token.refresh_token,
+        corporation_id: None,
+        corporation_name: None,
     })
 }
 

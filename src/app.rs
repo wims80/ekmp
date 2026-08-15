@@ -680,12 +680,8 @@ impl eframe::App for App {
             }
 
             let mut post_mail = None;
-            let visible_killmail_count = self
-                .killmails
-                .iter()
-                .filter(|mail| is_killmail_visible(&self.store, mail, now))
-                .count();
-            if !self.killmails.is_empty() && visible_killmail_count == 0 {
+            let visible_killmails = displayed_killmails(&self.store, &self.killmails, now);
+            if !self.killmails.is_empty() && visible_killmails.is_empty() {
                 ui.label("No killmails match the current display filters.");
             }
             let killmail_pane_height = ui.available_height().max(120.0);
@@ -694,11 +690,7 @@ impl eframe::App for App {
                 .max_height(killmail_pane_height)
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    for mail in self
-                        .killmails
-                        .iter()
-                        .filter(|mail| is_killmail_visible(&self.store, mail, now))
-                    {
+                    for mail in visible_killmails {
                         ui.horizontal(|ui| {
                             let sources = mail
                                 .sources
@@ -717,7 +709,6 @@ impl eframe::App for App {
                                 }
                                 ReportState::Unreported => {
                                     if protection_reasons.is_empty() {
-                                        ui.colored_label(egui::Color32::YELLOW, "Not reported");
                                         if ui
                                             .add_enabled(
                                                 !self.is_busy(),
@@ -964,6 +955,25 @@ fn is_eligible_for_bulk_posting(store: &Store, mail: &Killmail) -> bool {
 fn is_killmail_visible(store: &Store, mail: &Killmail, now: u64) -> bool {
     (store.show_reported_killmails || report_state(store, mail.id, now) != ReportState::Reported)
         && (store.show_protected_killmails || is_eligible_for_bulk_posting(store, mail))
+}
+
+fn displayed_killmails<'a>(
+    store: &Store,
+    killmails: &'a [Killmail],
+    now: u64,
+) -> Vec<&'a Killmail> {
+    let mut visible = killmails
+        .iter()
+        .filter(|mail| is_killmail_visible(store, mail, now))
+        .collect::<Vec<_>>();
+    if store.show_reported_killmails {
+        visible.sort_by_key(|mail| match report_state(store, mail.id, now) {
+            ReportState::Unreported => 0,
+            ReportState::Unknown => 1,
+            ReportState::Reported => 2,
+        });
+    }
+    visible
 }
 
 fn report_state(store: &Store, killmail_id: u64, now: u64) -> ReportState {
@@ -1291,6 +1301,44 @@ mod tests {
 
         store.show_reported_killmails = true;
         assert!(is_killmail_visible(&store, &reported, 100));
+    }
+
+    #[test]
+    fn displaying_reported_killmails_orders_unreported_first() {
+        let mut store = store();
+        store.show_reported_killmails = true;
+        for id in [12, 14] {
+            store.zkill_cache.insert(
+                id,
+                ZkillCacheEntry {
+                    reported: false,
+                    checked_at: 100,
+                },
+            );
+        }
+        for id in [10, 13] {
+            store.zkill_cache.insert(
+                id,
+                ZkillCacheEntry {
+                    reported: true,
+                    checked_at: 100,
+                },
+            );
+        }
+        let killmails = vec![
+            mail(10, &[1], None),
+            mail(11, &[1], None),
+            mail(12, &[1], None),
+            mail(13, &[1], None),
+            mail(14, &[1], None),
+        ];
+
+        let ids = displayed_killmails(&store, &killmails, 100)
+            .into_iter()
+            .map(|mail| mail.id)
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, vec![12, 14, 11, 10, 13]);
     }
 
     #[test]

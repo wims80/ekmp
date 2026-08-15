@@ -20,7 +20,7 @@ fn main() -> eframe::Result {
     };
 
     eframe::run_native(
-        "akmp",
+        "EVE Killmail Publisher",
         native_options,
         Box::new(|_| Ok(Box::new(app::App::new()))),
     )

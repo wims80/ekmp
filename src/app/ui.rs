@@ -107,8 +107,8 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_worker();
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("akmp");
-            ui.label("EVE Online killmail reporter");
+            ui.heading("EVE Killmail Publisher");
+            ui.label("EVE Online killmail publisher");
             ui.separator();
             if ui
                 .add_enabled(!self.is_busy(), egui::Button::new("Authenticate character"))

@@ -1,0 +1,30 @@
+{
+  "name": "errors",
+  "initial_store": {
+    "characters": [
+      {
+        "id": 1101,
+        "name": "Failure Pilot",
+        "corporation_id": 5101,
+        "corporation_name": "Failure Fixtures"
+      }
+    ],
+    "zkill_status_cache_version": 2
+  },
+  "killmails": [
+    {
+      "id": 9101,
+      "hash": "synthetic-error-hash",
+      "sources": [{ "id": 1101, "name": "Failure Pilot" }],
+      "victim_id": 3101,
+      "victim_corporation_id": 6101,
+      "victim": "Submission Failure Example",
+      "ship": "Synthetic Corvette",
+      "time": "2026-08-16T10:00:00Z"
+    }
+  ],
+  "confirmed_unreported_ids": [9101],
+  "post_results": {
+    "9101": { "result": "error", "message": "simulated service unavailable" }
+  }
+}

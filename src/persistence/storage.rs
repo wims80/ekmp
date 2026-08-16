@@ -20,7 +20,7 @@ pub fn load() -> Result<Store, String> {
     load_from_path(&path)
 }
 
-fn load_from_path(path: &Path) -> Result<Store, String> {
+pub(crate) fn load_from_path(path: &Path) -> Result<Store, String> {
     match fs::read(path) {
         Ok(data) => serde_json::from_slice(&data)
             .map_err(|error| format!("{} contains invalid JSON: {error}", path.display())),
@@ -52,7 +52,7 @@ fn load_missing_store(path: &Path) -> Result<Store, String> {
     }
 }
 
-fn persist_to_path(path: &Path, data: &[u8]) -> io::Result<()> {
+pub(crate) fn persist_to_path(path: &Path, data: &[u8]) -> io::Result<()> {
     let temporary_path = sibling_path(path, "tmp");
     let mut options = OpenOptions::new();
     options.create(true).truncate(true).write(true);

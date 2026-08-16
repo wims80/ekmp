@@ -1,8 +1,8 @@
 use crate::{
-    integrations::{auth, esi, images, zkill},
+    integrations::{backend::Backend, images, zkill},
     killmail::{report_state, ReportState},
     models::{Character, Killmail, ProtectedVictim, ProtectedVictimKind, Store},
-    persistence::{image_cache, secrets},
+    persistence::image_cache,
 };
 use std::{
     collections::HashSet,
@@ -12,10 +12,9 @@ use std::{
         Arc,
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-const REQUEST_SPACING: Duration = Duration::from_secs(1);
 const MAX_ZKILL_STATUS_PAGES: usize = 3;
 
 pub(super) use images::IdentityImageKey;
@@ -32,14 +31,19 @@ pub(super) enum IdentityImageEvent {
 }
 
 pub(super) fn start_identity_image_worker(
+    load_images: bool,
 ) -> (Sender<IdentityImageKey>, Receiver<IdentityImageEvent>) {
     let (request_tx, request_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();
     thread::spawn(move || {
         for key in request_rx {
-            let event = match load_identity_image(key) {
-                Ok(image) => IdentityImageEvent::Loaded(image),
-                Err(()) => IdentityImageEvent::Failed(key),
+            let event = if load_images {
+                match load_identity_image(key) {
+                    Ok(image) => IdentityImageEvent::Loaded(image),
+                    Err(()) => IdentityImageEvent::Failed(key),
+                }
+            } else {
+                IdentityImageEvent::Failed(key)
             };
             if event_tx.send(event).is_err() {
                 break;
@@ -140,13 +144,17 @@ pub(super) enum WorkerEvent {
     Failed(String),
 }
 
-pub(super) fn authenticate(tx: Sender<WorkerEvent>, cancelled: Arc<AtomicBool>) {
-    match auth::authenticate(&cancelled) {
+pub(super) fn authenticate(
+    backend: Arc<dyn Backend>,
+    tx: Sender<WorkerEvent>,
+    cancelled: Arc<AtomicBool>,
+) {
+    match backend.authenticate(&cancelled) {
         Ok(mut character) => {
             if cancelled.load(Ordering::Relaxed) {
                 return;
             }
-            if let Err(error) = esi::refresh_character_affiliation(&mut character) {
+            if let Err(error) = backend.refresh_character_affiliation(&mut character) {
                 let _ = tx.send(WorkerEvent::Status(format!(
                     "Character authenticated, but corporation lookup failed: {error}"
                 )));
@@ -154,7 +162,7 @@ pub(super) fn authenticate(tx: Sender<WorkerEvent>, cancelled: Arc<AtomicBool>) 
             if cancelled.load(Ordering::Relaxed) {
                 return;
             }
-            save_refresh_token_or_keep_fallback(&mut character, &tx);
+            save_refresh_token_or_keep_fallback(backend.as_ref(), &mut character, &tx);
             let _ = tx.send(WorkerEvent::Character(character));
             let _ = tx.send(WorkerEvent::Finished);
         }
@@ -164,21 +172,29 @@ pub(super) fn authenticate(tx: Sender<WorkerEvent>, cancelled: Arc<AtomicBool>) 
     }
 }
 
-pub(super) fn migrate_refresh_tokens(mut characters: Vec<Character>, tx: Sender<WorkerEvent>) {
+pub(super) fn migrate_refresh_tokens(
+    backend: Arc<dyn Backend>,
+    mut characters: Vec<Character>,
+    tx: Sender<WorkerEvent>,
+) {
     for character in &mut characters {
         if character.refresh_token.is_some() {
-            save_refresh_token_or_keep_fallback(character, &tx);
+            save_refresh_token_or_keep_fallback(backend.as_ref(), character, &tx);
         }
     }
     let _ = tx.send(WorkerEvent::RefreshTokensMigrated(characters));
     let _ = tx.send(WorkerEvent::Finished);
 }
 
-pub(super) fn remove_character(character: Character, tx: Sender<WorkerEvent>) {
+pub(super) fn remove_character(
+    backend: Arc<dyn Backend>,
+    character: Character,
+    tx: Sender<WorkerEvent>,
+) {
     let credential_error = if character.uses_json_refresh_token_fallback() {
         None
     } else {
-        secrets::delete_refresh_token(character.id).err()
+        backend.delete_refresh_token(character.id).err()
     };
     let _ = tx.send(WorkerEvent::CharacterRemoved {
         id: character.id,
@@ -188,11 +204,15 @@ pub(super) fn remove_character(character: Character, tx: Sender<WorkerEvent>) {
     let _ = tx.send(WorkerEvent::Finished);
 }
 
-fn save_refresh_token_or_keep_fallback(character: &mut Character, tx: &Sender<WorkerEvent>) {
+fn save_refresh_token_or_keep_fallback(
+    backend: &dyn Backend,
+    character: &mut Character,
+    tx: &Sender<WorkerEvent>,
+) {
     let Some(token) = character.refresh_token.as_deref() else {
         return;
     };
-    let result = secrets::save_refresh_token(character.id, token);
+    let result = backend.save_refresh_token(character.id, token);
     save_refresh_token_or_keep_fallback_with(character, result, tx);
 }
 
@@ -213,22 +233,12 @@ fn save_refresh_token_or_keep_fallback_with(
 }
 
 pub(super) fn resolve_protected_victim(
+    backend: Arc<dyn Backend>,
     kind: ProtectedVictimKind,
     query: String,
     tx: Sender<WorkerEvent>,
 ) {
-    let result = match query.parse::<u64>() {
-        Ok(id) if id > 0 => match kind {
-            ProtectedVictimKind::Character => {
-                esi::resolve_character_name(id).map(|name| ProtectedVictim { id, name })
-            }
-            ProtectedVictimKind::Corporation => {
-                esi::resolve_corporation_name(id).map(|name| ProtectedVictim { id, name })
-            }
-        },
-        _ => esi::resolve_protected_victim_name(kind, &query)
-            .map(|(id, name)| ProtectedVictim { id, name }),
-    };
+    let result = backend.resolve_protected_victim(kind, &query);
     match result {
         Ok(victim) => {
             let _ = tx.send(WorkerEvent::ProtectedVictimResolved { kind, victim });
@@ -242,7 +252,11 @@ pub(super) fn resolve_protected_victim(
     }
 }
 
-pub(super) fn post_killmails(mails: Vec<Killmail>, tx: Sender<WorkerEvent>) {
+pub(super) fn post_killmails(
+    backend: Arc<dyn Backend>,
+    mails: Vec<Killmail>,
+    tx: Sender<WorkerEvent>,
+) {
     let total = mails.len();
     for (index, mail) in mails.iter().enumerate() {
         if tx
@@ -255,7 +269,7 @@ pub(super) fn post_killmails(mails: Vec<Killmail>, tx: Sender<WorkerEvent>) {
         {
             return;
         }
-        let result = zkill::post(mail);
+        let result = backend.post(mail);
         if tx
             .send(WorkerEvent::PostComplete {
                 killmail_id: mail.id,
@@ -266,15 +280,19 @@ pub(super) fn post_killmails(mails: Vec<Killmail>, tx: Sender<WorkerEvent>) {
             return;
         }
         if index + 1 < total {
-            thread::sleep(REQUEST_SPACING);
+            thread::sleep(backend.request_spacing());
         }
     }
     let _ = tx.send(WorkerEvent::Finished);
 }
 
-pub(super) fn load_killmails_and_statuses(mut store: Store, tx: Sender<WorkerEvent>) {
+pub(super) fn load_killmails_and_statuses(
+    backend: Arc<dyn Backend>,
+    mut store: Store,
+    tx: Sender<WorkerEvent>,
+) {
     for character in &mut store.characters {
-        if let Err(error) = esi::refresh_character_affiliation(character) {
+        if let Err(error) = backend.refresh_character_affiliation(character) {
             let _ = tx.send(WorkerEvent::Status(format!(
                 "Could not refresh corporation for {}: {error}",
                 character.name
@@ -288,7 +306,7 @@ pub(super) fn load_killmails_and_statuses(mut store: Store, tx: Sender<WorkerEve
         return;
     }
 
-    let killmails = match esi::load_killmails(&store.characters) {
+    let killmails = match backend.load_killmails(&store.characters) {
         Ok(killmails) => killmails,
         Err(error) => {
             let _ = tx.send(WorkerEvent::Failed(format!(
@@ -304,11 +322,12 @@ pub(super) fn load_killmails_and_statuses(mut store: Store, tx: Sender<WorkerEve
         return;
     }
 
-    check_zkill_statuses(&store, &killmails, &tx);
+    check_zkill_statuses(backend.as_ref(), &store, &killmails, &tx);
     let _ = tx.send(WorkerEvent::Finished);
 }
 
 pub(super) fn check_zkill_statuses(
+    backend: &dyn Backend,
     store: &Store,
     killmails: &[Killmail],
     tx: &Sender<WorkerEvent>,
@@ -335,7 +354,7 @@ pub(super) fn check_zkill_statuses(
         {
             return;
         }
-        match check_zkill_status(check) {
+        match check_zkill_status(backend, check) {
             Ok(Some(reported_ids)) => {
                 if tx
                     .send(WorkerEvent::LookupComplete {
@@ -379,7 +398,7 @@ pub(super) fn check_zkill_statuses(
             }
         }
         if index + 1 < checks.len() {
-            thread::sleep(REQUEST_SPACING);
+            thread::sleep(backend.request_spacing());
         }
     }
 }
@@ -392,7 +411,10 @@ fn formatted_candidate_ids(candidates: &[StatusCandidate]) -> String {
         .join(", ")
 }
 
-fn check_zkill_status(check: &ZkillStatusCheck) -> Result<Option<HashSet<u64>>, String> {
+fn check_zkill_status(
+    backend: &dyn Backend,
+    check: &ZkillStatusCheck,
+) -> Result<Option<HashSet<u64>>, String> {
     let oldest_candidate_time = check
         .candidates
         .iter()
@@ -408,8 +430,8 @@ fn check_zkill_status(check: &ZkillStatusCheck) -> Result<Option<HashSet<u64>>, 
 
     for page in 1..=MAX_ZKILL_STATUS_PAGES {
         let entries = match check.role {
-            KillmailRole::Loss => zkill::character_loss_killmail_page(check.character_id, page),
-            KillmailRole::Kill => zkill::character_killmail_page(check.character_id, page),
+            KillmailRole::Loss => backend.character_loss_killmail_page(check.character_id, page),
+            KillmailRole::Kill => backend.character_killmail_page(check.character_id, page),
         }?;
         reported_ids.extend(
             entries
@@ -420,7 +442,7 @@ fn check_zkill_status(check: &ZkillStatusCheck) -> Result<Option<HashSet<u64>>, 
         if status_page_covers_oldest_candidate(&entries, oldest_candidate_time) {
             return Ok(Some(reported_ids));
         }
-        thread::sleep(REQUEST_SPACING);
+        thread::sleep(backend.request_spacing());
     }
     Ok(None)
 }

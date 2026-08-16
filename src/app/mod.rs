@@ -4,6 +4,7 @@ mod ui;
 mod worker;
 
 use crate::{
+    integrations::backend::{Backend, LiveBackend},
     killmail::{
         posting_summary, remove_killmails_without_authenticated_sources, remove_reported_killmails,
     },
@@ -11,6 +12,8 @@ use crate::{
     persistence::storage,
 };
 use eframe::egui;
+#[cfg(any(test, feature = "dev-tools"))]
+use std::path::PathBuf;
 use std::{
     collections::{HashMap, VecDeque},
     sync::{
@@ -87,17 +90,69 @@ pub struct App {
     identity_image_requests: Sender<IdentityImageKey>,
     identity_image_events: Receiver<IdentityImageEvent>,
     identity_images: HashMap<IdentityImageKey, IdentityImageState>,
+    backend: Arc<dyn Backend>,
+    persistence: PersistenceTarget,
+    simulation_name: Option<String>,
+    run_jobs_inline: bool,
+}
+
+pub(crate) enum PersistenceTarget {
+    Live,
+    #[cfg(any(test, feature = "dev-tools"))]
+    Disabled,
+    #[cfg(any(test, feature = "dev-tools"))]
+    File(PathBuf),
 }
 
 impl App {
     pub fn new() -> Self {
-        let (identity_image_requests, identity_image_events) =
-            worker::start_identity_image_worker();
         let (mut store, persistence_blocked) = match storage::load() {
             Ok(store) => (store, None),
             Err(error) => (Store::default(), Some(error)),
         };
-        let invalidated_unreported = invalidate_outdated_negative_statuses(&mut store);
+        Self::build(
+            &mut store,
+            persistence_blocked,
+            Arc::new(LiveBackend),
+            PersistenceTarget::Live,
+            None,
+            false,
+        )
+    }
+
+    #[cfg(any(test, feature = "dev-tools"))]
+    pub(crate) fn simulated(
+        mut store: Store,
+        backend: Arc<dyn Backend>,
+        scenario_name: String,
+        state_path: Option<PathBuf>,
+        run_jobs_inline: bool,
+    ) -> Self {
+        let persistence = match state_path {
+            Some(path) => PersistenceTarget::File(path),
+            None => PersistenceTarget::Disabled,
+        };
+        Self::build(
+            &mut store,
+            None,
+            backend,
+            persistence,
+            Some(scenario_name),
+            run_jobs_inline,
+        )
+    }
+
+    fn build(
+        store: &mut Store,
+        persistence_blocked: Option<String>,
+        backend: Arc<dyn Backend>,
+        persistence: PersistenceTarget,
+        simulation_name: Option<String>,
+        run_jobs_inline: bool,
+    ) -> Self {
+        let (identity_image_requests, identity_image_events) =
+            worker::start_identity_image_worker(simulation_name.is_none());
+        let invalidated_unreported = invalidate_outdated_negative_statuses(store);
         let removed_reported =
             remove_reported_killmails(&store.zkill_cache, &mut store.cached_killmails);
         let store_view = store.clone();
@@ -106,7 +161,7 @@ impl App {
             &mut store.cached_killmails,
         );
         let mut app = Self {
-            store,
+            store: std::mem::take(store),
             latest_status: "Ready to load recent killmails.".into(),
             status_history: VecDeque::from(["Ready to load recent killmails.".into()]),
             active_operation: None,
@@ -120,6 +175,10 @@ impl App {
             identity_image_requests,
             identity_image_events,
             identity_images: HashMap::new(),
+            backend,
+            persistence,
+            simulation_name,
+            run_jobs_inline,
         };
         if let Some(error) = app.persistence_blocked.clone() {
             app.log(format!(
@@ -295,7 +354,29 @@ impl App {
             self.log("Local state was not saved because it could not be loaded safely at startup");
             return;
         }
-        if let Err(error) = storage::persist(&self.store) {
+        let result = match &self.persistence {
+            PersistenceTarget::Live => storage::persist(&self.store),
+            #[cfg(any(test, feature = "dev-tools"))]
+            PersistenceTarget::Disabled => return,
+            #[cfg(any(test, feature = "dev-tools"))]
+            PersistenceTarget::File(path) => {
+                let ensure_parent = path
+                    .parent()
+                    .filter(|parent| !parent.as_os_str().is_empty())
+                    .map_or(Ok(()), std::fs::create_dir_all)
+                    .map_err(|error| error.to_string());
+                ensure_parent.and_then(|()| {
+                    serde_json::to_vec_pretty(&self.store)
+                        .map_err(|error| error.to_string())
+                        .and_then(|data| {
+                            storage::persist_to_path(path, &data).map_err(|error| {
+                                format!("could not atomically write {}: {error}", path.display())
+                            })
+                        })
+                })
+            }
+        };
+        if let Err(error) = result {
             self.log(format!("Could not save local state: {error}"));
         }
     }

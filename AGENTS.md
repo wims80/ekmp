@@ -47,7 +47,11 @@
   and submission policy.
 - `src/integrations/` owns external API integrations: EVE SSO authentication,
   ESI data access, EVE image-service portraits and logos, and zKillboard lookup
-  and submission.
+  and submission. Its single backend interface separates the live adapters from
+  the feature-gated offline simulator used by workers and UI tests.
+- `dev/scenarios/` owns synthetic JSON scenarios for offline development. The
+  `dev-tools` feature enables scenario launch and eframe inspection for agent
+  control; live runs must never expose the inspection interface.
 - `src/models.rs` contains persisted and domain models.
 - `src/persistence/secrets.rs` owns cross-platform refresh-token storage:
   Secret Service on Linux, Keychain on macOS, and Credential Manager on

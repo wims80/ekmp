@@ -12,6 +12,7 @@ use std::{
 };
 
 const REQUEST_SPACING: Duration = Duration::from_secs(1);
+const MAX_ZKILL_STATUS_PAGES: usize = 3;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KillmailRole {
@@ -23,8 +24,14 @@ enum KillmailRole {
 struct ZkillStatusCheck {
     character_name: String,
     character_id: u64,
-    candidate_ids: Vec<u64>,
+    candidates: Vec<StatusCandidate>,
     role: KillmailRole,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct StatusCandidate {
+    id: u64,
+    time: String,
 }
 
 pub(super) enum WorkerEvent {
@@ -51,6 +58,9 @@ pub(super) enum WorkerEvent {
     LookupFailed {
         character_name: String,
         error: String,
+    },
+    LookupIncomplete {
+        character_name: String,
     },
     PostComplete {
         killmail_id: u64,
@@ -240,18 +250,28 @@ pub(super) fn check_zkill_statuses(
         {
             return;
         }
-        let result = match check.role {
-            KillmailRole::Loss => zkill::character_loss_ids(check.character_id),
-            KillmailRole::Kill => zkill::character_kill_ids(check.character_id),
-        };
-        match result {
-            Ok(reported_ids) => {
+        match check_zkill_status(check) {
+            Ok(Some(reported_ids)) => {
                 if tx
                     .send(WorkerEvent::LookupComplete {
                         character_name: check.character_name.clone(),
-                        checked_ids: check.candidate_ids.clone(),
+                        checked_ids: check
+                            .candidates
+                            .iter()
+                            .map(|candidate| candidate.id)
+                            .collect(),
                         reported_ids,
                         checked_at: unix_time(),
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+            Ok(None) => {
+                if tx
+                    .send(WorkerEvent::LookupIncomplete {
+                        character_name: check.character_name.clone(),
                     })
                     .is_err()
                 {
@@ -276,6 +296,49 @@ pub(super) fn check_zkill_statuses(
     }
 }
 
+fn check_zkill_status(check: &ZkillStatusCheck) -> Result<Option<HashSet<u64>>, String> {
+    let oldest_candidate_time = check
+        .candidates
+        .iter()
+        .map(|candidate| candidate.time.as_str())
+        .min()
+        .unwrap_or_default();
+    let candidate_ids = check
+        .candidates
+        .iter()
+        .map(|candidate| candidate.id)
+        .collect::<HashSet<_>>();
+    let mut reported_ids = HashSet::new();
+
+    for page in 1..=MAX_ZKILL_STATUS_PAGES {
+        let entries = match check.role {
+            KillmailRole::Loss => zkill::character_loss_killmail_page(check.character_id, page),
+            KillmailRole::Kill => zkill::character_killmail_page(check.character_id, page),
+        }?;
+        reported_ids.extend(
+            entries
+                .iter()
+                .filter(|entry| candidate_ids.contains(&entry.killmail_id))
+                .map(|entry| entry.killmail_id),
+        );
+        if status_page_covers_oldest_candidate(&entries, oldest_candidate_time) {
+            return Ok(Some(reported_ids));
+        }
+        thread::sleep(REQUEST_SPACING);
+    }
+    Ok(None)
+}
+
+fn status_page_covers_oldest_candidate(
+    entries: &[zkill::KillEntry],
+    oldest_candidate_time: &str,
+) -> bool {
+    entries.len() < zkill::KILLMAILS_PER_PAGE
+        || entries
+            .last()
+            .is_some_and(|entry| entry.killmail_time.as_str() <= oldest_candidate_time)
+}
+
 fn zkill_status_checks(store: &Store, killmails: &[Killmail], now: u64) -> Vec<ZkillStatusCheck> {
     let mut checks = Vec::new();
     for character in &store.characters {
@@ -288,13 +351,16 @@ fn zkill_status_checks(store: &Store, killmails: &[Killmail], now: u64) -> Vec<Z
             let candidate_ids = candidates
                 .into_iter()
                 .filter(|mail| report_state(store, mail.id, now) == ReportState::Unknown)
-                .map(|mail| mail.id)
+                .map(|mail| StatusCandidate {
+                    id: mail.id,
+                    time: mail.time.clone(),
+                })
                 .collect::<Vec<_>>();
             if !candidate_ids.is_empty() {
                 checks.push(ZkillStatusCheck {
                     character_name: character.name.clone(),
                     character_id: character.id,
-                    candidate_ids,
+                    candidates: candidate_ids,
                     role,
                 });
             }
@@ -369,17 +435,49 @@ mod tests {
                 ZkillStatusCheck {
                     character_name: "Pilot 1".into(),
                     character_id: 1,
-                    candidate_ids: vec![12],
+                    candidates: vec![StatusCandidate {
+                        id: 12,
+                        time: "Time".into(),
+                    }],
                     role: KillmailRole::Kill,
                 },
                 ZkillStatusCheck {
                     character_name: "Pilot 1".into(),
                     character_id: 1,
-                    candidate_ids: vec![13],
+                    candidates: vec![StatusCandidate {
+                        id: 13,
+                        time: "Time".into(),
+                    }],
                     role: KillmailRole::Loss,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn status_pages_cover_candidates_only_after_reaching_their_oldest_time() {
+        let recent_entry = zkill::KillEntry {
+            killmail_id: 1,
+            killmail_time: "2026-08-16T12:00:00Z".into(),
+        };
+        let old_entry = zkill::KillEntry {
+            killmail_id: 2,
+            killmail_time: "2026-05-24T19:39:44Z".into(),
+        };
+        let full_recent_page = vec![recent_entry.clone(); zkill::KILLMAILS_PER_PAGE];
+
+        assert!(!status_page_covers_oldest_candidate(
+            &full_recent_page,
+            "2026-05-24T19:39:44Z"
+        ));
+        assert!(status_page_covers_oldest_candidate(
+            &[recent_entry.clone(), old_entry],
+            "2026-05-24T19:39:44Z"
+        ));
+        assert!(status_page_covers_oldest_candidate(
+            &[recent_entry],
+            "2026-05-24T19:39:44Z"
+        ));
     }
 
     #[test]

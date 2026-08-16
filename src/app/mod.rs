@@ -5,7 +5,7 @@ mod worker;
 
 use crate::{
     killmail::{remove_killmails_without_authenticated_sources, remove_reported_killmails},
-    models::{Character, Killmail, ProtectedVictimKind, Store},
+    models::{Character, Killmail, ProtectedVictimKind, Store, ZKILL_STATUS_CACHE_VERSION},
     storage,
 };
 use std::{collections::VecDeque, sync::mpsc::Receiver};
@@ -75,6 +75,7 @@ impl App {
             Ok(store) => (store, None),
             Err(error) => (Store::default(), Some(error)),
         };
+        let invalidated_unreported = invalidate_outdated_negative_statuses(&mut store);
         let removed_reported =
             remove_reported_killmails(&store.zkill_cache, &mut store.cached_killmails);
         let store_view = store.clone();
@@ -99,8 +100,14 @@ impl App {
             app.log(format!(
                 "Could not safely load local state; saving is disabled: {error}"
             ));
-        } else if removed_reported > 0 || removed_orphaned > 0 {
+        } else if invalidated_unreported > 0 || removed_reported > 0 || removed_orphaned > 0 {
             app.persist_or_log_error();
+        }
+        if invalidated_unreported > 0 {
+            app.log(format!(
+                "Rechecking {invalidated_unreported} cached killmail status{} with the updated zKillboard lookup",
+                if invalidated_unreported == 1 { "" } else { "es" }
+            ));
         }
         if app
             .store
@@ -151,5 +158,46 @@ impl App {
 
     fn prune_persisted_reported_killmails(&mut self) {
         remove_reported_killmails(&self.store.zkill_cache, &mut self.store.cached_killmails);
+    }
+}
+
+fn invalidate_outdated_negative_statuses(store: &mut Store) -> usize {
+    if store.zkill_status_cache_version >= ZKILL_STATUS_CACHE_VERSION {
+        return 0;
+    }
+    let previous_len = store.zkill_cache.len();
+    store.zkill_cache.retain(|_, entry| entry.reported);
+    store.zkill_status_cache_version = ZKILL_STATUS_CACHE_VERSION;
+    previous_len - store.zkill_cache.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::ZkillCacheEntry;
+
+    #[test]
+    fn updated_lookup_invalidates_only_old_negative_cache_entries() {
+        let mut store = Store::default();
+        store.zkill_cache.insert(
+            1,
+            ZkillCacheEntry {
+                reported: true,
+                checked_at: 10,
+            },
+        );
+        store.zkill_cache.insert(
+            2,
+            ZkillCacheEntry {
+                reported: false,
+                checked_at: 10,
+            },
+        );
+
+        assert_eq!(invalidate_outdated_negative_statuses(&mut store), 1);
+        assert!(store.zkill_cache.contains_key(&1));
+        assert!(!store.zkill_cache.contains_key(&2));
+        assert_eq!(store.zkill_status_cache_version, ZKILL_STATUS_CACHE_VERSION);
+        assert_eq!(invalidate_outdated_negative_statuses(&mut store), 0);
     }
 }

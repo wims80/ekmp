@@ -73,6 +73,8 @@ pub struct Killmail {
     pub victim: String,
     pub ship: String,
     pub time: String,
+    #[serde(default)]
+    pub estimated_value_isk: Option<f64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +142,7 @@ mod tests {
                 victim: "Victim".into(),
                 ship: "Ship".into(),
                 time: "Time".into(),
+                estimated_value_isk: Some(1_250_000.0),
             }],
             ..Store::default()
         };
@@ -168,6 +171,10 @@ mod tests {
         assert!(restored.show_protected_killmails);
         assert_eq!(restored.cached_killmails.len(), 1);
         assert_eq!(restored.cached_killmails[0].id, 7);
+        assert_eq!(
+            restored.cached_killmails[0].estimated_value_isk,
+            Some(1_250_000.0)
+        );
         assert_eq!(restored.manually_protected_characters[0].id, 8);
         assert_eq!(restored.manually_protected_corporations[0].id, 9);
         assert_eq!(restored.zkill_status_cache_version, 0);

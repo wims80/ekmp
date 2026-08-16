@@ -17,10 +17,10 @@ and explicitly submitting selected killmails to zKillboard.
 - Configurable protected victim characters and corporations excluded from bulk posting
 - A posting summary showing bulk-eligible, protected, and still-unchecked killmails
 - A separate `Post to zKillboard` button for each killmail still confirmed as
-  unreported
+  unreported, revealed by expanding its compact killmail card
 - Confirmed bulk submission of all unreported killmails
 - A review-focused dashboard with connected characters and protection controls
-  beside a status summary and readable killmail cards
+  beside a status summary and compact killmail cards with estimated ISK values
 - An expanded activity log that identifies characters, killmail IDs, source
   counts, and zKillboard status-check outcomes
 
@@ -90,6 +90,14 @@ Character portraits and corporation logos are cached separately in
 `~/.cache/ekmp/images` on Linux (or `$XDG_CACHE_HOME/ekmp/images` when set) and
 `%LOCALAPPDATA%\ekmp\images` on Windows. Cached images are refreshed after seven
 days, with stale images retained as an offline fallback.
+
+Cacheable ESI GET responses are stored separately in a bounded SQLite cache:
+`~/.cache/ekmp/esi-cache.sqlite3` on Linux (or
+`$XDG_CACHE_HOME/ekmp/esi-cache.sqlite3`) and
+`%LOCALAPPDATA%\ekmp\esi-cache.sqlite3` on Windows. The cache follows ESI's
+`Expires` and `ETag` headers, revalidating expired data conditionally. Full
+killmail-detail responses are deliberately excluded so reported killmail
+records are never retained there.
 
 Configuration updates are written through a temporary file before replacing
 the previous file. On Unix, the file is restricted to the current user. If the

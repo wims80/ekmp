@@ -62,6 +62,8 @@
   of unreadable state.
 - `src/persistence/image_cache.rs` owns the local cache for public EVE character
   portraits and corporation logos.
+- `src/persistence/esi_cache.rs` owns the local SQLite cache for cacheable ESI
+  GET responses, including expiry and conditional-request metadata.
 - `packaging/linux/` owns files installed by the Linux release archive;
   `scripts/package-linux.sh` and `scripts/package-windows.ps1` assemble the
   platform release archives.

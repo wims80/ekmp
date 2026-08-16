@@ -613,7 +613,20 @@ impl App {
 
         let mut post_mail = None;
         for mail in visible_killmails {
-            killmail_card(ui, &self.store, mail, now, self.is_busy(), &mut post_mail);
+            let expanded = self.expanded_killmail_ids.contains(&mail.id);
+            if killmail_card(
+                ui,
+                &self.store,
+                mail,
+                now,
+                self.is_busy(),
+                expanded,
+                &mut post_mail,
+            ) {
+                self.expanded_killmail_ids.insert(mail.id);
+            } else {
+                self.expanded_killmail_ids.remove(&mail.id);
+            }
             ui.add_space(8.0);
         }
         if let Some(mail) = post_mail {
@@ -796,8 +809,9 @@ fn killmail_card(
     mail: &Killmail,
     now: u64,
     busy: bool,
+    mut expanded: bool,
     post_mail: &mut Option<Killmail>,
-) {
+) -> bool {
     let protection_reasons = protected_victim_reasons(store, mail);
     let protected = !protection_reasons.is_empty();
     let state = report_state(store, mail.id, now);
@@ -814,82 +828,119 @@ fn killmail_card(
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new(&mail.victim).size(17.0).strong());
                     ui.label(
-                        egui::RichText::new(format!("{}  ·  {}", mail.ship, mail.time))
-                            .color(MUTED),
+                        egui::RichText::new(format!(
+                            "{}  ·  {}  ·  {}",
+                            mail.ship,
+                            estimated_value_label(mail.estimated_value_isk),
+                            mail.time
+                        ))
+                        .color(MUTED),
                     );
                 });
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::TOP),
-                    |ui| match state {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                    let arrow = if expanded { "⌄" } else { "›" };
+                    let action = if expanded { "Collapse" } else { "Expand" };
+                    let response = ui
+                        .add(egui::Button::new(arrow).min_size(egui::vec2(28.0, 28.0)))
+                        .on_hover_text(format!("{action} killmail details"));
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            format!("{action} killmail {}", mail.id),
+                        )
+                    });
+                    if response.clicked() {
+                        expanded = !expanded;
+                    }
+                    match state {
                         ReportState::Reported => chip(ui, "REPORTED", SUCCESS),
                         ReportState::Unreported if protected => chip(ui, "PROTECTED", WARNING),
                         ReportState::Unreported => chip(ui, "READY", SUCCESS),
                         ReportState::Unknown => chip(ui, "CHECKING", MUTED),
-                    },
-                );
-            });
-            ui.add_space(8.0);
-            ui.separator();
-            ui.add_space(5.0);
-            ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(format!("KILLMAIL {}", mail.id))
-                        .small()
-                        .color(MUTED),
-                );
-                let sources = mail
-                    .sources
-                    .iter()
-                    .map(|source| source.name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                ui.label(
-                    egui::RichText::new(format!("FROM {sources}"))
-                        .small()
-                        .color(MUTED),
-                );
-            });
-
-            if protected {
-                ui.add_space(5.0);
-                let reasons = protection_reasons
-                    .iter()
-                    .map(protection_reason_label)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                ui.label(
-                    egui::RichText::new(format!("Excluded from bulk posting · {reasons}"))
-                        .small()
-                        .color(WARNING),
-                );
-            }
-
-            if state == ReportState::Unreported {
-                ui.add_space(8.0);
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let label = if protected {
-                        "Post anyway"
-                    } else {
-                        "Post to zKillboard"
-                    };
-                    let response = ui.add_enabled(!busy, egui::Button::new(label));
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            !busy,
-                            if protected {
-                                format!("Post protected killmail {} anyway", mail.id)
-                            } else {
-                                format!("Post killmail {}", mail.id)
-                            },
-                        )
-                    });
-                    if response.clicked() {
-                        *post_mail = Some(mail.clone());
                     }
                 });
+            });
+            if expanded {
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(5.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(format!("KILLMAIL {}", mail.id))
+                            .small()
+                            .color(MUTED),
+                    );
+                    let sources = mail
+                        .sources
+                        .iter()
+                        .map(|source| source.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    ui.label(
+                        egui::RichText::new(format!("FROM {sources}"))
+                            .small()
+                            .color(MUTED),
+                    );
+                });
+
+                if protected {
+                    ui.add_space(5.0);
+                    let reasons = protection_reasons
+                        .iter()
+                        .map(protection_reason_label)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    ui.label(
+                        egui::RichText::new(format!("Excluded from bulk posting · {reasons}"))
+                            .small()
+                            .color(WARNING),
+                    );
+                }
+
+                if state == ReportState::Unreported {
+                    ui.add_space(8.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let label = if protected {
+                            "Post anyway"
+                        } else {
+                            "Post to zKillboard"
+                        };
+                        let response = ui.add_enabled(!busy, egui::Button::new(label));
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                !busy,
+                                if protected {
+                                    format!("Post protected killmail {} anyway", mail.id)
+                                } else {
+                                    format!("Post killmail {}", mail.id)
+                                },
+                            )
+                        });
+                        if response.clicked() {
+                            *post_mail = Some(mail.clone());
+                        }
+                    });
+                }
             }
         });
+    expanded
+}
+
+fn estimated_value_label(value: Option<f64>) -> String {
+    let Some(value) = value else {
+        return "Est. cost unavailable".into();
+    };
+    if value >= 1_000_000_000.0 {
+        format!("Est. cost {:.1}B ISK", value / 1_000_000_000.0)
+    } else if value >= 1_000_000.0 {
+        format!("Est. cost {:.1}M ISK", value / 1_000_000.0)
+    } else if value >= 1_000.0 {
+        format!("Est. cost {:.1}K ISK", value / 1_000.0)
+    } else {
+        format!("Est. cost {:.0} ISK", value)
+    }
 }
 
 fn metric_card(
@@ -1120,8 +1171,28 @@ mod tests {
         harness.run_steps(4);
 
         assert!(harness.query_by_label("Eligible Example").is_some());
+        assert!(harness
+            .query_by_label_contains("Est. cost 2.9M ISK")
+            .is_some());
+        assert!(harness.query_by_label("Post killmail 9001").is_none());
         assert!(backend.posted_ids().is_empty());
 
+        harness
+            .get_by_label("Expand killmail 9001")
+            .click_accesskit();
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Post killmail 9001").is_some());
+
+        harness
+            .get_by_label("Collapse killmail 9001")
+            .click_accesskit();
+        harness.run_steps(2);
+        assert!(harness.query_by_label("Post killmail 9001").is_none());
+
+        harness
+            .get_by_label("Expand killmail 9001")
+            .click_accesskit();
+        harness.run_steps(2);
         harness.get_by_label("Post killmail 9001").click_accesskit();
         harness.run_steps(4);
 

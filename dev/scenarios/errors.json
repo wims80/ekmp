@@ -20,7 +20,8 @@
       "victim_corporation_id": 6101,
       "victim": "Submission Failure Example",
       "ship": "Synthetic Corvette",
-      "time": "2026-08-16T10:00:00Z"
+      "time": "2026-08-16T10:00:00Z",
+      "estimated_value_isk": 650000
     }
   ],
   "confirmed_unreported_ids": [9101],

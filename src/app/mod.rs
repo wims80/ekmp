@@ -15,7 +15,7 @@ use eframe::egui;
 #[cfg(any(test, feature = "dev-tools"))]
 use std::path::PathBuf;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::AtomicBool,
         mpsc::{Receiver, Sender},
@@ -86,6 +86,7 @@ pub struct App {
     new_protected_victim_query: String,
     new_protected_victim_kind: ProtectedVictimKind,
     session_reports: Vec<SessionReport>,
+    expanded_killmail_ids: HashSet<u64>,
     persistence_blocked: Option<String>,
     identity_image_requests: Sender<IdentityImageKey>,
     identity_image_events: Receiver<IdentityImageEvent>,
@@ -171,6 +172,7 @@ impl App {
             new_protected_victim_query: String::new(),
             new_protected_victim_kind: ProtectedVictimKind::Character,
             session_reports: Vec::new(),
+            expanded_killmail_ids: HashSet::new(),
             persistence_blocked,
             identity_image_requests,
             identity_image_events,

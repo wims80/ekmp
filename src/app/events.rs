@@ -98,6 +98,7 @@ impl App {
                     .collect::<Vec<_>>();
                 let source_count = self.store.characters.len();
                 self.store.cached_killmails = killmails;
+                self.expanded_killmail_ids.clear();
                 self.prune_persisted_reported_killmails();
                 let retained_count = self.store.cached_killmails.len();
                 let removed_reported = fetched_count.saturating_sub(retained_count);
@@ -286,6 +287,7 @@ mod tests {
             victim: "Victim".into(),
             ship: "Ship".into(),
             time: "Time".into(),
+            estimated_value_isk: None,
         }
     }
 

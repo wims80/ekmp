@@ -10,15 +10,23 @@ pub(crate) enum ReportState {
     Unknown,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum ProtectionReason {
+    AuthenticatedCharacter(String),
+    AuthenticatedCorporation(String),
+    ManuallyProtectedCharacter(String),
+    ManuallyProtectedCorporation(String),
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct PostingSummary {
     pub eligible_for_bulk_posting: usize,
     pub protected: usize,
     pub awaiting_status: usize,
-    pub protection_reasons: Vec<(String, usize)>,
+    pub protection_reasons: Vec<(ProtectionReason, usize)>,
 }
 
-pub(crate) fn protected_victim_reasons(store: &Store, mail: &Killmail) -> Vec<String> {
+pub(crate) fn protected_victim_reasons(store: &Store, mail: &Killmail) -> Vec<ProtectionReason> {
     let mut reasons = Vec::new();
     if let Some(victim_id) = mail.victim_id {
         if let Some(character) = store
@@ -26,23 +34,26 @@ pub(crate) fn protected_victim_reasons(store: &Store, mail: &Killmail) -> Vec<St
             .iter()
             .find(|character| character.id == victim_id)
         {
-            reasons.push(format!("authenticated character {}", character.name));
+            reasons.push(ProtectionReason::AuthenticatedCharacter(
+                character.name.clone(),
+            ));
         }
         if let Some(character) = store
             .manually_protected_characters
             .iter()
             .find(|character| character.id == victim_id)
         {
-            reasons.push(format!("character {}", character.name));
+            reasons.push(ProtectionReason::ManuallyProtectedCharacter(
+                character.name.clone(),
+            ));
         }
     }
     if let Some(corporation_id) = mail.victim_corporation_id {
         if let Some(character) = store.characters.iter().find(|character| {
             character.corporation_id == Some(corporation_id) && character.corporation_name.is_some()
         }) {
-            reasons.push(format!(
-                "authenticated corporation {}",
-                character.corporation_name.as_deref().unwrap_or_default()
+            reasons.push(ProtectionReason::AuthenticatedCorporation(
+                character.corporation_name.clone().unwrap_or_default(),
             ));
         }
         if let Some(corporation) = store
@@ -50,7 +61,9 @@ pub(crate) fn protected_victim_reasons(store: &Store, mail: &Killmail) -> Vec<St
             .iter()
             .find(|corporation| corporation.id == corporation_id)
         {
-            reasons.push(format!("corporation {}", corporation.name));
+            reasons.push(ProtectionReason::ManuallyProtectedCorporation(
+                corporation.name.clone(),
+            ));
         }
     }
     reasons
@@ -182,16 +195,21 @@ pub(crate) fn posting_summary(store: &Store, killmails: &[Killmail], now: u64) -
     summary
 }
 
-pub(crate) fn submission_candidates(
+pub(crate) fn bulk_submission_candidates(
     store: &Store,
     mut mails: Vec<Killmail>,
-    bulk: bool,
     now: u64,
 ) -> Vec<Killmail> {
-    if bulk {
-        mails.retain(|mail| is_bulk_candidate(store, mail, now));
-    }
+    mails.retain(|mail| is_bulk_candidate(store, mail, now));
     mails
+}
+
+pub(crate) fn individual_submission_candidate(
+    store: &Store,
+    mail: Killmail,
+    now: u64,
+) -> Option<Killmail> {
+    (report_state(store, mail.id, now) == ReportState::Unreported).then_some(mail)
 }
 
 #[cfg(test)]
@@ -293,8 +311,14 @@ mod tests {
                 protected: 2,
                 awaiting_status: 1,
                 protection_reasons: vec![
-                    ("authenticated corporation Pilot Corp".into(), 1),
-                    ("character Protected Pilot".into(), 1),
+                    (
+                        ProtectionReason::AuthenticatedCorporation("Pilot Corp".into()),
+                        1,
+                    ),
+                    (
+                        ProtectionReason::ManuallyProtectedCharacter("Protected Pilot".into()),
+                        1,
+                    ),
                 ],
             }
         );
@@ -344,11 +368,36 @@ mod tests {
         );
         let protected = mail(10, &[1], Some(2));
 
-        assert!(submission_candidates(&store, vec![protected.clone()], true, 100).is_empty());
+        assert!(bulk_submission_candidates(&store, vec![protected.clone()], 100).is_empty());
         assert_eq!(
-            submission_candidates(&store, vec![protected], false, 100)[0].id,
+            individual_submission_candidate(&store, protected, 100)
+                .unwrap()
+                .id,
             10
         );
+    }
+
+    #[test]
+    fn individual_submission_requires_a_confirmed_unreported_status() {
+        let mut store = store();
+        store.zkill_cache.insert(
+            10,
+            ZkillCacheEntry {
+                reported: false,
+                checked_at: 100,
+            },
+        );
+        store.zkill_cache.insert(
+            11,
+            ZkillCacheEntry {
+                reported: true,
+                checked_at: 100,
+            },
+        );
+
+        assert!(individual_submission_candidate(&store, mail(10, &[1], None), 100).is_some());
+        assert!(individual_submission_candidate(&store, mail(11, &[1], None), 100).is_none());
+        assert!(individual_submission_candidate(&store, mail(12, &[1], None), 100).is_none());
     }
 
     #[test]

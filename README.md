@@ -14,7 +14,8 @@ and explicitly submitting selected killmails to zKillboard.
 - Session-only results for explicitly submitted killmails, with zKillboard links
 - Configurable protected victim characters and corporations excluded from bulk posting
 - A posting summary showing bulk-eligible, protected, and still-unchecked killmails
-- A separate `Post to zKillboard` button for each loaded killmail
+- A separate `Post to zKillboard` button for each killmail still confirmed as
+  unreported
 - Confirmed bulk submission of all unreported killmails
 
 Killmails are never submitted automatically.
@@ -22,10 +23,10 @@ Killmails are never submitted automatically.
 Authenticated characters and their corporations are automatically protected.
 Additional victim character and corporation IDs can be added under `Protected
 victims`. Killmails involving protected victims are excluded from bulk
-submission but can still be submitted individually with the explicit `Post
-anyway` button. Protected killmails are hidden from the recent-killmail list by
-default and can be displayed with the persisted `Show protected killmails`
-checkbox.
+submission but, while confirmed as unreported, can still be submitted
+individually with the explicit `Post anyway` button. Protected killmails are
+hidden from the recent-killmail list by default and can be displayed with the
+persisted `Show protected killmails` checkbox.
 
 ## Installation
 
@@ -76,6 +77,11 @@ status cache. The snapshot is displayed immediately on the next startup. Full
 killmail records already reported to zKillboard are removed from the snapshot;
 only their compact status-cache entries are retained. Unreported results are
 checked again after 15 minutes.
+
+Configuration updates are written through a temporary file before replacing
+the previous file. On Unix, the file is restricted to the current user. If the
+existing configuration cannot be read or parsed, the application displays an
+error and disables saving for that session rather than overwriting it.
 
 OAuth refresh tokens are stored in the operating system credential store:
 Secret Service on Linux (GNOME Keyring or KDE/KWallet), Keychain on macOS, and

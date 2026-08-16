@@ -1,8 +1,7 @@
-use super::ProtectedVictimKind;
 use crate::{
     auth, esi,
     killmail::{report_state, ReportState},
-    models::{Character, Killmail, ProtectedVictim, Store},
+    models::{Character, Killmail, ProtectedVictim, ProtectedVictimKind, Store},
     zkill,
 };
 use std::{
@@ -13,6 +12,20 @@ use std::{
 };
 
 const REQUEST_SPACING: Duration = Duration::from_secs(1);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KillmailRole {
+    Kill,
+    Loss,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct ZkillStatusCheck {
+    character_name: String,
+    character_id: u64,
+    candidate_ids: Vec<u64>,
+    role: KillmailRole,
+}
 
 pub(super) enum WorkerEvent {
     Status(String),
@@ -211,11 +224,15 @@ pub(super) fn check_zkill_statuses(
 ) {
     let checks = zkill_status_checks(store, killmails, unix_time());
 
-    for (index, (name, id, candidate_ids, is_loss)) in checks.iter().enumerate() {
-        let mail_type = if *is_loss { "losses" } else { "kills" };
+    for (index, check) in checks.iter().enumerate() {
+        let mail_type = match check.role {
+            KillmailRole::Kill => "kills",
+            KillmailRole::Loss => "losses",
+        };
         if tx
             .send(WorkerEvent::Status(format!(
-                "Checking recent {mail_type} for {name} on zKillboard ({}/{})...",
+                "Checking recent {mail_type} for {} on zKillboard ({}/{})...",
+                check.character_name,
                 index + 1,
                 checks.len()
             )))
@@ -223,17 +240,16 @@ pub(super) fn check_zkill_statuses(
         {
             return;
         }
-        let result = if *is_loss {
-            zkill::character_loss_ids(*id)
-        } else {
-            zkill::character_kill_ids(*id)
+        let result = match check.role {
+            KillmailRole::Loss => zkill::character_loss_ids(check.character_id),
+            KillmailRole::Kill => zkill::character_kill_ids(check.character_id),
         };
         match result {
             Ok(reported_ids) => {
                 if tx
                     .send(WorkerEvent::LookupComplete {
-                        character_name: name.clone(),
-                        checked_ids: candidate_ids.clone(),
+                        character_name: check.character_name.clone(),
+                        checked_ids: check.candidate_ids.clone(),
                         reported_ids,
                         checked_at: unix_time(),
                     })
@@ -245,7 +261,7 @@ pub(super) fn check_zkill_statuses(
             Err(error) => {
                 if tx
                     .send(WorkerEvent::LookupFailed {
-                        character_name: name.clone(),
+                        character_name: check.character_name.clone(),
                         error,
                     })
                     .is_err()
@@ -260,11 +276,7 @@ pub(super) fn check_zkill_statuses(
     }
 }
 
-fn zkill_status_checks(
-    store: &Store,
-    killmails: &[Killmail],
-    now: u64,
-) -> Vec<(String, u64, Vec<u64>, bool)> {
+fn zkill_status_checks(store: &Store, killmails: &[Killmail], now: u64) -> Vec<ZkillStatusCheck> {
     let mut checks = Vec::new();
     for character in &store.characters {
         let character_mails = killmails
@@ -272,14 +284,19 @@ fn zkill_status_checks(
             .filter(|mail| mail.sources.iter().any(|source| source.id == character.id));
         let (losses, kills): (Vec<_>, Vec<_>) =
             character_mails.partition(|mail| mail.victim_id == Some(character.id));
-        for (is_loss, candidates) in [(false, kills), (true, losses)] {
+        for (role, candidates) in [(KillmailRole::Kill, kills), (KillmailRole::Loss, losses)] {
             let candidate_ids = candidates
                 .into_iter()
                 .filter(|mail| report_state(store, mail.id, now) == ReportState::Unknown)
                 .map(|mail| mail.id)
                 .collect::<Vec<_>>();
             if !candidate_ids.is_empty() {
-                checks.push((character.name.clone(), character.id, candidate_ids, is_loss));
+                checks.push(ZkillStatusCheck {
+                    character_name: character.name.clone(),
+                    character_id: character.id,
+                    candidate_ids,
+                    role,
+                });
             }
         }
     }
@@ -349,8 +366,18 @@ mod tests {
         assert_eq!(
             zkill_status_checks(&store, &killmails, 1_000),
             vec![
-                ("Pilot 1".into(), 1, vec![12], false),
-                ("Pilot 1".into(), 1, vec![13], true),
+                ZkillStatusCheck {
+                    character_name: "Pilot 1".into(),
+                    character_id: 1,
+                    candidate_ids: vec![12],
+                    role: KillmailRole::Kill,
+                },
+                ZkillStatusCheck {
+                    character_name: "Pilot 1".into(),
+                    character_id: 1,
+                    candidate_ids: vec![13],
+                    role: KillmailRole::Loss,
+                },
             ]
         );
     }

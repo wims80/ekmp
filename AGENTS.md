@@ -36,19 +36,23 @@
 
 ## Architecture
 
-- `src/app/mod.rs` owns application state, operations, event handling, and
-  persistence coordination.
-- `src/app/ui.rs` owns egui rendering and user interactions.
+- `src/app/mod.rs` owns application state, construction, shared status handling,
+  and persistence coordination.
+- `src/app/operations.rs` owns operation startup and submission revalidation.
+- `src/app/events.rs` owns worker-event handling and operation completion.
+- `src/app/ui.rs` owns egui rendering and user interactions, decomposed into
+  section-level rendering methods.
 - `src/app/worker.rs` owns blocking background work and worker events.
 - `src/killmail.rs` owns killmail visibility, reporting status, protection,
-  ordering, and submission policy.
+  and submission policy.
 - `src/auth.rs`, `src/esi.rs`, and `src/zkill.rs` are API-specific modules.
 - `src/models.rs` contains persisted and domain models.
 - `src/secrets.rs` owns cross-platform refresh-token storage: Secret Service on
   Linux, Keychain on macOS, and Credential Manager on Windows. It also supports
   the common JSON fallback when a credential store fails; keep its work off the
   UI thread.
-- `src/storage.rs` owns local configuration loading and saving.
+- `src/storage.rs` owns local configuration loading and atomic saving, including
+  restrictive Unix file permissions and fail-safe handling of unreadable state.
 - `packaging/linux/` owns files installed by the Linux release archive;
   `scripts/package-linux.sh` and `scripts/package-windows.ps1` assemble the
   platform release archives.

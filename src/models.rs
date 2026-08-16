@@ -52,6 +52,12 @@ pub struct ProtectedVictim {
     pub name: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProtectedVictimKind {
+    Character,
+    Corporation,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Killmail {
     pub id: u64,

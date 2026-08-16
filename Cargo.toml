@@ -15,6 +15,7 @@ eframe = { version = "0.36", default-features = false, features = [
     "wayland",
     "x11",
 ] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 keyring = "4.1"
 open = "5"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "gzip", "json", "rustls-tls"] }

@@ -4,12 +4,22 @@ mod ui;
 mod worker;
 
 use crate::{
-    killmail::{remove_killmails_without_authenticated_sources, remove_reported_killmails},
+    killmail::{
+        posting_summary, remove_killmails_without_authenticated_sources, remove_reported_killmails,
+    },
     models::{Character, Killmail, ProtectedVictimKind, Store, ZKILL_STATUS_CACHE_VERSION},
     persistence::storage,
 };
-use std::{collections::VecDeque, sync::mpsc::Receiver};
-use worker::WorkerEvent;
+use eframe::egui;
+use std::{
+    collections::{HashMap, VecDeque},
+    sync::{
+        atomic::AtomicBool,
+        mpsc::{Receiver, Sender},
+        Arc,
+    },
+};
+use worker::{IdentityImageEvent, IdentityImageKey, WorkerEvent};
 
 const STATUS_HISTORY_LIMIT: usize = 200;
 
@@ -53,6 +63,13 @@ enum SessionReportStatus {
 struct ActiveOperation {
     kind: Operation,
     events: Receiver<WorkerEvent>,
+    cancellation: Option<Arc<AtomicBool>>,
+}
+
+enum IdentityImageState {
+    Loading,
+    Ready(egui::TextureHandle),
+    Failed,
 }
 
 pub struct App {
@@ -63,14 +80,19 @@ pub struct App {
     post_stats: PostStats,
     pending_bulk: Option<Vec<Killmail>>,
     pending_character_removal: Option<Character>,
-    new_protected_victim_id: String,
+    new_protected_victim_query: String,
     new_protected_victim_kind: ProtectedVictimKind,
     session_reports: Vec<SessionReport>,
     persistence_blocked: Option<String>,
+    identity_image_requests: Sender<IdentityImageKey>,
+    identity_image_events: Receiver<IdentityImageEvent>,
+    identity_images: HashMap<IdentityImageKey, IdentityImageState>,
 }
 
 impl App {
     pub fn new() -> Self {
+        let (identity_image_requests, identity_image_events) =
+            worker::start_identity_image_worker();
         let (mut store, persistence_blocked) = match storage::load() {
             Ok(store) => (store, None),
             Err(error) => (Store::default(), Some(error)),
@@ -91,10 +113,13 @@ impl App {
             post_stats: PostStats::default(),
             pending_bulk: None,
             pending_character_removal: None,
-            new_protected_victim_id: String::new(),
+            new_protected_victim_query: String::new(),
             new_protected_victim_kind: ProtectedVictimKind::Character,
             session_reports: Vec::new(),
             persistence_blocked,
+            identity_image_requests,
+            identity_image_events,
+            identity_images: HashMap::new(),
         };
         if let Some(error) = app.persistence_blocked.clone() {
             app.log(format!(
@@ -126,6 +151,62 @@ impl App {
         self.active_operation.is_some()
     }
 
+    fn is_authenticating(&self) -> bool {
+        self.active_operation
+            .as_ref()
+            .is_some_and(|operation| matches!(operation.kind, Operation::Authenticate))
+    }
+
+    fn status_pill_text(&self) -> String {
+        if let Some(active) = &self.active_operation {
+            return match active.kind {
+                Operation::Authenticate => "Waiting for EVE authorization".into(),
+                Operation::MigrateRefreshTokens => "Securing character credentials".into(),
+                Operation::RemoveCharacter => "Disconnecting character".into(),
+                Operation::Load => "Loading recent killmails".into(),
+                Operation::CheckCachedStatuses => "Checking zKillboard status".into(),
+                Operation::AddProtectedVictim => "Adding protected victim".into(),
+                Operation::Post(SubmissionMode::Individual) => "Posting one killmail".into(),
+                Operation::Post(SubmissionMode::Bulk) => "Posting eligible killmails".into(),
+            };
+        }
+        if self.persistence_blocked.is_some() {
+            return "Local state unavailable · See warning".into();
+        }
+
+        let latest_status = self.latest_status.to_ascii_lowercase();
+        if latest_status.contains("failed")
+            || latest_status.contains("could not")
+            || latest_status.contains("unavailable")
+        {
+            return "Action needed · See activity log".into();
+        }
+        if self.store.characters.is_empty() {
+            return "Connect a character to begin".into();
+        }
+        if self.store.cached_killmails.is_empty() {
+            return "Ready to load recent killmails".into();
+        }
+
+        let summary = posting_summary(
+            &self.store,
+            &self.store.cached_killmails,
+            worker::unix_time(),
+        );
+        if summary.awaiting_status > 0 {
+            format!("Checking {} killmail statuses", summary.awaiting_status)
+        } else if summary.eligible_for_bulk_posting > 0 {
+            format!(
+                "Ready · {} eligible for posting",
+                summary.eligible_for_bulk_posting
+            )
+        } else if summary.protected > 0 {
+            format!("Review queue · {} protected", summary.protected)
+        } else {
+            "Review queue is up to date".into()
+        }
+    }
+
     fn persisted_controls_enabled(&self) -> bool {
         !self.is_busy() && self.persistence_blocked.is_none()
     }
@@ -135,6 +216,69 @@ impl App {
             .characters
             .iter()
             .any(|character| character.uses_json_refresh_token_fallback())
+    }
+
+    fn protected_victim_already_present(&self, kind: ProtectedVictimKind, id: u64) -> bool {
+        match kind {
+            ProtectedVictimKind::Character => {
+                self.store.characters.iter().any(|entry| entry.id == id)
+                    || self
+                        .store
+                        .manually_protected_characters
+                        .iter()
+                        .any(|entry| entry.id == id)
+            }
+            ProtectedVictimKind::Corporation => {
+                self.store
+                    .characters
+                    .iter()
+                    .any(|entry| entry.corporation_id == Some(id))
+                    || self
+                        .store
+                        .manually_protected_corporations
+                        .iter()
+                        .any(|entry| entry.id == id)
+            }
+        }
+    }
+
+    fn queue_identity_image(&mut self, key: IdentityImageKey) {
+        if self.identity_images.contains_key(&key) {
+            return;
+        }
+        let state = if self.identity_image_requests.send(key).is_ok() {
+            IdentityImageState::Loading
+        } else {
+            IdentityImageState::Failed
+        };
+        self.identity_images.insert(key, state);
+    }
+
+    fn poll_identity_images(&mut self, ctx: &egui::Context) {
+        for event in self.identity_image_events.try_iter() {
+            match event {
+                IdentityImageEvent::Loaded(image) => {
+                    let color_image =
+                        egui::ColorImage::from_rgba_unmultiplied(image.size, &image.rgba);
+                    let texture = ctx.load_texture(
+                        image.key.texture_name(),
+                        color_image,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    self.identity_images
+                        .insert(image.key, IdentityImageState::Ready(texture));
+                }
+                IdentityImageEvent::Failed(key) => {
+                    self.identity_images.insert(key, IdentityImageState::Failed);
+                }
+            }
+        }
+    }
+
+    fn identity_images_loading(&self) -> bool {
+        self.identity_images
+            .values()
+            .any(|state| matches!(state, IdentityImageState::Loading))
     }
 
     fn log(&mut self, message: impl Into<String>) {

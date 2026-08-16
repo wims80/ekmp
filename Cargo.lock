@@ -920,6 +920,7 @@ version = "0.1.2"
 dependencies = [
  "base64 0.23.1",
  "eframe",
+ "image",
  "keyring",
  "open",
  "rand 0.9.5",
@@ -1674,6 +1675,8 @@ dependencies = [
  "num-traits",
  "png",
  "tiff",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

@@ -5,8 +5,11 @@ use reqwest::{blocking::Client, Url};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
-    io::{Read, Write},
+    io::{ErrorKind, Read, Write},
     net::TcpListener,
+    sync::atomic::{AtomicBool, Ordering},
+    thread,
+    time::{Duration, Instant},
 };
 const CALLBACK: &str = "http://127.0.0.1:17842/callback";
 // EVE client IDs are public identifiers. Replace this with the client ID for the
@@ -14,8 +17,10 @@ const CALLBACK: &str = "http://127.0.0.1:17842/callback";
 const CLIENT_ID: &str = "5df72c2c20ce4c70ad2863766e130d33";
 const SSO: &str = "https://login.eveonline.com/v2/oauth";
 const SCOPE: &str = "esi-killmails.read_killmails.v1";
+const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
+const CALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-pub fn authenticate() -> Result<Character, String> {
+pub fn authenticate(cancelled: &AtomicBool) -> Result<Character, String> {
     let mut random = OsRng;
     let mut state_bytes = [0_u8; 32];
     let mut verifier_bytes = [0_u8; 32];
@@ -39,7 +44,10 @@ pub fn authenticate() -> Result<Character, String> {
         TcpListener::bind("127.0.0.1:17842").map_err(|e| format!("Callback unavailable: {e}"))?;
     open::that(url.as_str())
         .map_err(|_| "Could not open browser; use the authorization URL manually".to_string())?;
-    let code = receive_callback(listener, &state)?;
+    let code = receive_callback(listener, &state, cancelled)?;
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Character connection cancelled".into());
+    }
     exchange_code(&verifier, &code)
 }
 
@@ -65,8 +73,41 @@ pub fn access_token(c: &Character) -> Result<String, String> {
     Ok(token.access_token)
 }
 
-fn receive_callback(listener: TcpListener, expected_state: &str) -> Result<String, String> {
-    let (mut stream, _) = listener.accept().map_err(|e| e.to_string())?;
+fn receive_callback(
+    listener: TcpListener,
+    expected_state: &str,
+    cancelled: &AtomicBool,
+) -> Result<String, String> {
+    receive_callback_until(
+        listener,
+        expected_state,
+        cancelled,
+        Instant::now() + CALLBACK_TIMEOUT,
+    )
+}
+
+fn receive_callback_until(
+    listener: TcpListener,
+    expected_state: &str,
+    cancelled: &AtomicBool,
+    deadline: Instant,
+) -> Result<String, String> {
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| format!("Could not monitor the authorization callback: {error}"))?;
+    let mut stream = loop {
+        check_callback_wait(cancelled, deadline)?;
+        match listener.accept() {
+            Ok((stream, _)) => break stream,
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                thread::sleep(CALLBACK_POLL_INTERVAL);
+            }
+            Err(error) => return Err(format!("Authorization callback failed: {error}")),
+        }
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| format!("Could not configure the authorization callback: {error}"))?;
     let mut buffer = [0; 4096];
     let size = stream.read(&mut buffer).map_err(|e| e.to_string())?;
     let request = String::from_utf8_lossy(&buffer[..size]);
@@ -90,6 +131,16 @@ fn receive_callback(listener: TcpListener, expected_state: &str) -> Result<Strin
         .ok_or("Authorization failed")?;
     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nAuthorization complete. You can close this window.");
     Ok(code)
+}
+
+fn check_callback_wait(cancelled: &AtomicBool, deadline: Instant) -> Result<(), String> {
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Character connection cancelled".into());
+    }
+    if Instant::now() >= deadline {
+        return Err("Character connection timed out; start the connection again".into());
+    }
+    Ok(())
 }
 
 fn exchange_code(verifier: &str, code: &str) -> Result<Character, String> {
@@ -145,4 +196,31 @@ struct Verify {
     character_id: u64,
     #[serde(rename = "CharacterName")]
     character_name: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn callback_wait_can_be_cancelled() {
+        let cancelled = AtomicBool::new(true);
+
+        let error =
+            check_callback_wait(&cancelled, Instant::now() + Duration::from_secs(60)).unwrap_err();
+
+        assert_eq!(error, "Character connection cancelled");
+    }
+
+    #[test]
+    fn callback_wait_times_out() {
+        let cancelled = AtomicBool::new(false);
+
+        let error = check_callback_wait(&cancelled, Instant::now()).unwrap_err();
+
+        assert_eq!(
+            error,
+            "Character connection timed out; start the connection again"
+        );
+    }
 }

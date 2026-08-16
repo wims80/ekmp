@@ -46,7 +46,8 @@
 - `src/killmail.rs` owns killmail visibility, reporting status, protection,
   and submission policy.
 - `src/integrations/` owns external API integrations: EVE SSO authentication,
-  ESI data access, and zKillboard lookup and submission.
+  ESI data access, EVE image-service portraits and logos, and zKillboard lookup
+  and submission.
 - `src/models.rs` contains persisted and domain models.
 - `src/persistence/secrets.rs` owns cross-platform refresh-token storage:
   Secret Service on Linux, Keychain on macOS, and Credential Manager on
@@ -55,6 +56,8 @@
 - `src/persistence/storage.rs` owns local configuration loading and atomic
   saving, including restrictive Unix file permissions and fail-safe handling
   of unreadable state.
+- `src/persistence/image_cache.rs` owns the local cache for public EVE character
+  portraits and corporation logos.
 - `packaging/linux/` owns files installed by the Linux release archive;
   `scripts/package-linux.sh` and `scripts/package-windows.ps1` assemble the
   platform release archives.

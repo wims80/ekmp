@@ -7,6 +7,7 @@ and explicitly submitting selected killmails to zKillboard.
 
 - EVE SSO PKCE authentication with the `esi-killmails.read_killmails.v1` scope
 - Multiple authenticated characters
+- Locally cached EVE character portraits and corporation logos
 - Removal of authenticated characters, their stored refresh tokens, and their
   unshared cached killmails
 - Recent killmail retrieval from ESI
@@ -18,12 +19,16 @@ and explicitly submitting selected killmails to zKillboard.
 - A separate `Post to zKillboard` button for each killmail still confirmed as
   unreported
 - Confirmed bulk submission of all unreported killmails
+- A review-focused dashboard with connected characters and protection controls
+  beside a status summary and readable killmail cards
+- An expanded activity log that identifies characters, killmail IDs, source
+  counts, and zKillboard status-check outcomes
 
 Killmails are never submitted automatically.
 
 Authenticated characters and their corporations are automatically protected.
-Additional victim character and corporation IDs can be added under `Protected
-victims`. Killmails involving protected victims are excluded from bulk
+Additional victim characters and corporations can be added by exact EVE name
+or numeric ID under `Protected victims`. Killmails involving protected victims are excluded from bulk
 submission but, while confirmed as unreported, can still be submitted
 individually with the explicit `Post anyway` button. Protected killmails are
 hidden from the recent-killmail list by default and can be displayed with the
@@ -70,6 +75,8 @@ application and must never enter, request, or share a client secret.
 
 After starting the application, authenticate one or more characters, load
 recent killmails, and use an individual post button when desired.
+An in-progress character connection can be cancelled from the application and
+times out after five minutes if the browser authorization is abandoned.
 
 The local configuration is stored in `~/.config/ekmp/ekmp.json` on Linux and
 `%APPDATA%\ekmp\ekmp.json` on Windows. It contains application preferences, a
@@ -78,6 +85,11 @@ status cache. The snapshot is displayed immediately on the next startup. Full
 killmail records already reported to zKillboard are removed from the snapshot;
 only their compact status-cache entries are retained. Unreported results are
 checked again after 15 minutes.
+
+Character portraits and corporation logos are cached separately in
+`~/.cache/ekmp/images` on Linux (or `$XDG_CACHE_HOME/ekmp/images` when set) and
+`%LOCALAPPDATA%\ekmp\images` on Windows. Cached images are refreshed after seven
+days, with stale images retained as an offline fallback.
 
 Configuration updates are written through a temporary file before replacing
 the previous file. On Unix, the file is restricted to the current user. If the

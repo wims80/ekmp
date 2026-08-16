@@ -33,11 +33,32 @@ pub(super) fn killmail_card(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
+                let arrow = if expanded { "v" } else { ">" };
+                let action = if expanded { "Collapse" } else { "Expand" };
+                let response = ui
+                    .add_sized(
+                        egui::vec2(22.0, 28.0),
+                        egui::Label::new(egui::RichText::new(arrow).size(20.0))
+                            .selectable(false)
+                            .sense(egui::Sense::click()),
+                    )
+                    .on_hover_text(format!("{action} killmail details"));
+                response.widget_info(|| {
+                    egui::WidgetInfo::labeled(
+                        egui::WidgetType::Button,
+                        true,
+                        format!("{action} killmail {}", mail.id),
+                    )
+                });
+                if response.clicked() {
+                    expanded = !expanded;
+                }
+
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new(&mail.victim).size(17.0).strong());
                     ui.label(
                         egui::RichText::new(format!(
-                            "{}  ·  {}  ·  {}",
+                            "{}  -  {}  -  {}",
                             mail.ship,
                             estimated_value_label(mail.estimated_value_isk),
                             mail.time
@@ -45,29 +66,15 @@ pub(super) fn killmail_card(
                         .color(MUTED),
                     );
                 });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    let arrow = if expanded { "⌄" } else { "›" };
-                    let action = if expanded { "Collapse" } else { "Expand" };
-                    let response = ui
-                        .add(egui::Button::new(arrow).min_size(egui::vec2(28.0, 28.0)))
-                        .on_hover_text(format!("{action} killmail details"));
-                    response.widget_info(|| {
-                        egui::WidgetInfo::labeled(
-                            egui::WidgetType::Button,
-                            true,
-                            format!("{action} killmail {}", mail.id),
-                        )
-                    });
-                    if response.clicked() {
-                        expanded = !expanded;
-                    }
-                    match state {
+                ui.with_layout(
+                    egui::Layout::right_to_left(egui::Align::TOP),
+                    |ui| match state {
                         ReportState::Reported => chip(ui, "REPORTED", SUCCESS),
                         ReportState::Unreported if protected => chip(ui, "PROTECTED", WARNING),
                         ReportState::Unreported => chip(ui, "READY", SUCCESS),
                         ReportState::Unknown => chip(ui, "CHECKING", MUTED),
-                    }
-                });
+                    },
+                );
             });
             if expanded {
                 ui.add_space(8.0);
@@ -83,7 +90,7 @@ pub(super) fn killmail_card(
                         .collect::<Vec<_>>()
                         .join(", ");
                     ui.label(
-                        egui::RichText::new(format!("Excluded from bulk posting · {reasons}"))
+                        egui::RichText::new(format!("Excluded from bulk posting - {reasons}"))
                             .small()
                             .color(WARNING),
                     );
@@ -131,7 +138,7 @@ fn expanded_killmail(
         .collect::<Vec<_>>()
         .join(", ");
     ui.label(
-        egui::RichText::new(format!("KILLMAIL {} · FROM {sources}", mail.id))
+        egui::RichText::new(format!("KILLMAIL {} - FROM {sources}", mail.id))
             .small()
             .color(MUTED),
     );
@@ -167,7 +174,7 @@ fn expanded_killmail(
                         ui,
                         images.get(&IdentityImageKey::TypeRender(ship_type_id)),
                         112.0,
-                        '◇',
+                        '?',
                         "Victim ship render",
                     );
                 }
@@ -181,7 +188,7 @@ fn expanded_killmail(
                     .into_iter()
                     .flatten()
                     .collect::<Vec<_>>()
-                    .join(" · ");
+                    .join(" - ");
                     if !organizations.is_empty() {
                         ui.label(egui::RichText::new(organizations).color(MUTED));
                     }
@@ -207,14 +214,14 @@ fn expanded_killmail(
                     });
                     let location = match &detail.location.region_name {
                         Some(region) => {
-                            format!("{} · {region}", detail.location.solar_system_name)
+                            format!("{} - {region}", detail.location.solar_system_name)
                         }
                         None => detail.location.solar_system_name.clone(),
                     };
-                    ui.label(format!("{} · {location}", mail.time));
+                    ui.label(format!("{} - {location}", mail.time));
                     ui.label(
                         egui::RichText::new(format!(
-                            "{} damage taken · {}",
+                            "{} damage taken - {}",
                             format_number(detail.victim.damage_taken),
                             estimated_value_label(mail.estimated_value_isk)
                         ))
@@ -318,7 +325,7 @@ fn attacker_row(
                     ui,
                     images.get(&IdentityImageKey::TypeIcon(ship_type_id)),
                     28.0,
-                    '◇',
+                    '?',
                     "Attacker ship",
                 );
             }
@@ -327,7 +334,7 @@ fn attacker_row(
                     ui,
                     images.get(&IdentityImageKey::TypeIcon(weapon_type_id)),
                     28.0,
-                    '⌁',
+                    '~',
                     "Attacker weapon",
                 );
             }
@@ -355,13 +362,13 @@ fn attacker_row(
             .into_iter()
             .flatten()
             .collect::<Vec<_>>()
-            .join(" · ");
+            .join(" - ");
             if !organization.is_empty() {
                 ui.label(egui::RichText::new(organization).small().color(MUTED));
             }
             ui.label(
                 egui::RichText::new(format!(
-                    "{} · {}",
+                    "{} - {}",
                     attacker.ship_name.as_deref().unwrap_or("Unknown ship"),
                     attacker.weapon_name.as_deref().unwrap_or("Unknown weapon")
                 ))
@@ -411,7 +418,7 @@ fn fitting_pane(
                             ui,
                             images.get(&IdentityImageKey::TypeIcon(row.item_type_id)),
                             28.0,
-                            '□',
+                            '?',
                             "Fitting item",
                         );
                         ui.vertical(|ui| {
@@ -420,7 +427,7 @@ fn fitting_pane(
                                 (0, dropped) => format!("Dropped {dropped}"),
                                 (destroyed, 0) => format!("Destroyed {destroyed}"),
                                 (destroyed, dropped) => {
-                                    format!("Destroyed {destroyed} · Dropped {dropped}")
+                                    format!("Destroyed {destroyed} - Dropped {dropped}")
                                 }
                             };
                             ui.label(

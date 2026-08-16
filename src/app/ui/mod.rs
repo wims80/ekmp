@@ -204,9 +204,11 @@ impl App {
                                 });
                                 ui.vertical(|ui| {
                                     ui.horizontal(|ui| {
-                                        ui.label(
-                                            egui::RichText::new("●").color(SUCCESS).size(10.0),
+                                        let (rect, _) = ui.allocate_exact_size(
+                                            egui::vec2(10.0, 10.0),
+                                            egui::Sense::hover(),
                                         );
+                                        ui.painter().circle_filled(rect.center(), 4.0, SUCCESS);
                                         ui.add(
                                             egui::Label::new(
                                                 egui::RichText::new(&character.name).strong(),
@@ -284,7 +286,7 @@ impl App {
                         ui.label(egui::RichText::new("Current status").strong().color(ACCENT));
                         ui.label(&self.latest_status);
                         egui::CollapsingHeader::new(format!(
-                            "Activity log · {} entries",
+                            "Activity log - {} entries",
                             self.status_history.len()
                         ))
                         .default_open(false)
@@ -352,14 +354,14 @@ impl App {
         );
         ui.add_space(5.0);
         egui::CollapsingHeader::new(format!(
-            "{} automatic  ·  {} manual",
+            "{} automatic - {} manual",
             automatic_count, manual_count
         ))
         .default_open(false)
         .show(ui, |ui| {
             ui.label(egui::RichText::new("Automatic protection").strong());
             for character in &self.store.characters {
-                ui.label(format!("Character · {}", character.name));
+                ui.label(format!("Character - {}", character.name));
             }
             let mut corporation_ids = HashSet::new();
             for character in &self.store.characters {
@@ -367,7 +369,7 @@ impl App {
                     (character.corporation_id, &character.corporation_name)
                 {
                     if corporation_ids.insert(id) {
-                        ui.label(format!("Corporation · {name}"));
+                        ui.label(format!("Corporation - {name}"));
                     }
                 }
             }
@@ -492,7 +494,7 @@ impl App {
                             self.persisted_controls_enabled() && !self.store.characters.is_empty();
                         let response = ui.add_enabled(
                             enabled,
-                            egui::Button::new("↻  Refresh killmails").fill(SURFACE_RAISED),
+                            egui::Button::new("Refresh killmails").fill(SURFACE_RAISED),
                         );
                         response.widget_info(|| {
                             egui::WidgetInfo::labeled(
@@ -668,13 +670,13 @@ impl App {
                             SessionReportStatus::Submitted => "Submitted",
                             SessionReportStatus::AlreadyPresent => "Already on zKillboard",
                         };
-                        ui.label(egui::RichText::new("✓").color(SUCCESS));
-                        ui.label(format!("Killmail {} · {status}", report.killmail_id));
+                        ui.label(egui::RichText::new("OK").small().color(SUCCESS));
+                        ui.label(format!("Killmail {} - {status}", report.killmail_id));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if self.simulation_name.is_some() {
                                 ui.label("Simulated result");
                             } else {
-                                ui.hyperlink_to("Open ↗", &report.url);
+                                ui.hyperlink_to("Open", &report.url);
                             }
                         });
                     });
@@ -947,7 +949,7 @@ mod tests {
 
         assert_eq!(backend.posted_ids(), vec![9001]);
         assert!(harness
-            .query_by_label_contains("Killmail 9001 · Submitted")
+            .query_by_label_contains("Killmail 9001 - Submitted")
             .is_some());
     }
 

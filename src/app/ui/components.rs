@@ -122,7 +122,9 @@ pub(super) fn status_badge(ui: &mut egui::Ui, busy: bool, status: &str) {
                 if busy {
                     ui.spinner();
                 } else {
-                    ui.label(egui::RichText::new("●").color(SUCCESS).size(10.0));
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 4.0, SUCCESS);
                 }
                 ui.add(
                     egui::Label::new(egui::RichText::new(status).size(15.5).color(MUTED))
@@ -186,7 +188,7 @@ pub(super) fn empty_queue(ui: &mut egui::Ui, title: &str, description: &str) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new("◎").size(28.0).color(ACCENT));
+                ui.label(egui::RichText::new("o").size(28.0).color(ACCENT));
                 ui.label(egui::RichText::new(title).size(17.0).strong());
                 ui.label(egui::RichText::new(description).color(MUTED));
             });

@@ -232,7 +232,7 @@ impl App {
             };
         }
         if self.persistence_blocked.is_some() {
-            return "Local state unavailable · See warning".into();
+            return "Local state unavailable - See warning".into();
         }
 
         let latest_status = self.latest_status.to_ascii_lowercase();
@@ -240,7 +240,7 @@ impl App {
             || latest_status.contains("could not")
             || latest_status.contains("unavailable")
         {
-            return "Action needed · See activity log".into();
+            return "Action needed - See activity log".into();
         }
         if self.store.characters.is_empty() {
             return "Connect a character to begin".into();
@@ -258,11 +258,11 @@ impl App {
             format!("Checking {} killmail statuses", summary.awaiting_status)
         } else if summary.eligible_for_bulk_posting > 0 {
             format!(
-                "Ready · {} eligible for posting",
+                "Ready - {} eligible for posting",
                 summary.eligible_for_bulk_posting
             )
         } else if summary.protected > 0 {
-            format!("Review queue · {} protected", summary.protected)
+            format!("Review queue - {} protected", summary.protected)
         } else {
             "Review queue is up to date".into()
         }

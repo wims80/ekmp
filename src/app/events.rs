@@ -107,7 +107,7 @@ impl App {
                     self.log(summary);
                 }
                 self.log(format!(
-                    "Review queue · Combined {fetched_count} unique killmail IDs from {source_count} authenticated character{}. Duplicate IDs visible to multiple characters are counted once. Retained {retained_count}; removed {removed_reported} already known as reported.",
+                    "Review queue - Combined {fetched_count} unique killmail IDs from {source_count} authenticated character{}. Duplicate IDs visible to multiple characters are counted once. Retained {retained_count}; removed {removed_reported} already known as reported.",
                     if source_count == 1 { "" } else { "s" },
                 ));
             }
@@ -139,7 +139,7 @@ impl App {
                 self.prune_persisted_reported_killmails();
                 self.persist_or_log_error();
                 self.log(format!(
-                    "zKillboard · {character_name} ({character_id}) · Checked {checked_count} killmail IDs: {reported_count} already reported and {unreported_count} confirmed unreported. Killmail IDs: {ids}"
+                    "zKillboard - {character_name} ({character_id}) - Checked {checked_count} killmail IDs: {reported_count} already reported and {unreported_count} confirmed unreported. Killmail IDs: {ids}"
                 ));
             }
             super::WorkerEvent::LookupFailed {
@@ -147,13 +147,13 @@ impl App {
                 character_id,
                 error,
             } => self.log(format!(
-                "zKillboard · {character_name} ({character_id}) · Status check failed; affected killmails remain unavailable for posting. {error}"
+                "zKillboard - {character_name} ({character_id}) - Status check failed; affected killmails remain unavailable for posting. {error}"
             )),
             super::WorkerEvent::LookupIncomplete {
                 character_name,
                 character_id,
             } => self.log(format!(
-                "zKillboard · {character_name} ({character_id}) · Status check reached the three-page lookup limit; affected killmails remain unavailable for posting"
+                "zKillboard - {character_name} ({character_id}) - Status check reached the three-page lookup limit; affected killmails remain unavailable for posting"
             )),
             super::WorkerEvent::PostComplete {
                 killmail_id,
@@ -253,7 +253,7 @@ fn character_killmail_summary(character: &Character, killmails: &[Killmail]) -> 
     let kills = character_mails.len() - losses;
     let ids = formatted_killmail_ids(character_mails.iter().map(|mail| mail.id));
     format!(
-        "ESI · {} ({}) · Returned {} recent killmails: {kills} kills and {losses} losses. Killmail IDs: {ids}",
+        "ESI - {} ({}) - Returned {} recent killmails: {kills} kills and {losses} losses. Killmail IDs: {ids}",
         character.name,
         character.id,
         character_mails.len(),

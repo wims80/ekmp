@@ -347,7 +347,7 @@ pub(super) fn check_zkill_statuses(
         };
         if tx
             .send(WorkerEvent::Status(format!(
-                "zKillboard · {} ({}) · Checking whether {} recent {mail_type} {} already reported (batch {}/{}). Killmail IDs: {}",
+                "zKillboard - {} ({}) - Checking whether {} recent {mail_type} {} already reported (batch {}/{}). Killmail IDs: {}",
                 check.character_name,
                 check.character_id,
                 check.candidates.len(),

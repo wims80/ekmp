@@ -1,18 +1,85 @@
 use crate::{
-    integrations::{auth, esi, zkill},
+    integrations::{auth, esi, images, zkill},
     killmail::{report_state, ReportState},
     models::{Character, Killmail, ProtectedVictim, ProtectedVictimKind, Store},
-    persistence::secrets,
+    persistence::{image_cache, secrets},
 };
 use std::{
     collections::HashSet,
-    sync::mpsc::Sender,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+        Arc,
+    },
     thread,
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 const REQUEST_SPACING: Duration = Duration::from_secs(1);
 const MAX_ZKILL_STATUS_PAGES: usize = 3;
+
+pub(super) use images::IdentityImageKey;
+
+pub(super) struct DecodedIdentityImage {
+    pub key: IdentityImageKey,
+    pub size: [usize; 2],
+    pub rgba: Vec<u8>,
+}
+
+pub(super) enum IdentityImageEvent {
+    Loaded(DecodedIdentityImage),
+    Failed(IdentityImageKey),
+}
+
+pub(super) fn start_identity_image_worker(
+) -> (Sender<IdentityImageKey>, Receiver<IdentityImageEvent>) {
+    let (request_tx, request_rx) = mpsc::channel();
+    let (event_tx, event_rx) = mpsc::channel();
+    thread::spawn(move || {
+        for key in request_rx {
+            let event = match load_identity_image(key) {
+                Ok(image) => IdentityImageEvent::Loaded(image),
+                Err(()) => IdentityImageEvent::Failed(key),
+            };
+            if event_tx.send(event).is_err() {
+                break;
+            }
+        }
+    });
+    (request_tx, event_rx)
+}
+
+fn load_identity_image(key: IdentityImageKey) -> Result<DecodedIdentityImage, ()> {
+    let cached = image_cache::load(key).ok().flatten();
+    if let Some(cached) = &cached {
+        if cached.fresh {
+            if let Ok(image) = decode_identity_image(key, &cached.bytes) {
+                return Ok(image);
+            }
+        }
+    }
+
+    match images::fetch(key) {
+        Ok(bytes) => {
+            let image = decode_identity_image(key, &bytes)?;
+            let _ = image_cache::store(key, &bytes);
+            Ok(image)
+        }
+        Err(_) => cached
+            .and_then(|cached| decode_identity_image(key, &cached.bytes).ok())
+            .ok_or(()),
+    }
+}
+
+fn decode_identity_image(key: IdentityImageKey, bytes: &[u8]) -> Result<DecodedIdentityImage, ()> {
+    let decoded = image::load_from_memory(bytes).map_err(|_| ())?.into_rgba8();
+    let size = [decoded.width() as usize, decoded.height() as usize];
+    Ok(DecodedIdentityImage {
+        key,
+        size,
+        rgba: decoded.into_raw(),
+    })
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum KillmailRole {
@@ -51,16 +118,19 @@ pub(super) enum WorkerEvent {
     KillmailsLoaded(Vec<Killmail>),
     LookupComplete {
         character_name: String,
+        character_id: u64,
         checked_ids: Vec<u64>,
         reported_ids: HashSet<u64>,
         checked_at: u64,
     },
     LookupFailed {
         character_name: String,
+        character_id: u64,
         error: String,
     },
     LookupIncomplete {
         character_name: String,
+        character_id: u64,
     },
     PostComplete {
         killmail_id: u64,
@@ -70,13 +140,19 @@ pub(super) enum WorkerEvent {
     Failed(String),
 }
 
-pub(super) fn authenticate(tx: Sender<WorkerEvent>) {
-    match auth::authenticate() {
+pub(super) fn authenticate(tx: Sender<WorkerEvent>, cancelled: Arc<AtomicBool>) {
+    match auth::authenticate(&cancelled) {
         Ok(mut character) => {
+            if cancelled.load(Ordering::Relaxed) {
+                return;
+            }
             if let Err(error) = esi::refresh_character_affiliation(&mut character) {
                 let _ = tx.send(WorkerEvent::Status(format!(
                     "Character authenticated, but corporation lookup failed: {error}"
                 )));
+            }
+            if cancelled.load(Ordering::Relaxed) {
+                return;
             }
             save_refresh_token_or_keep_fallback(&mut character, &tx);
             let _ = tx.send(WorkerEvent::Character(character));
@@ -138,19 +214,24 @@ fn save_refresh_token_or_keep_fallback_with(
 
 pub(super) fn resolve_protected_victim(
     kind: ProtectedVictimKind,
-    id: u64,
+    query: String,
     tx: Sender<WorkerEvent>,
 ) {
-    let result = match kind {
-        ProtectedVictimKind::Character => esi::resolve_character_name(id),
-        ProtectedVictimKind::Corporation => esi::resolve_corporation_name(id),
+    let result = match query.parse::<u64>() {
+        Ok(id) if id > 0 => match kind {
+            ProtectedVictimKind::Character => {
+                esi::resolve_character_name(id).map(|name| ProtectedVictim { id, name })
+            }
+            ProtectedVictimKind::Corporation => {
+                esi::resolve_corporation_name(id).map(|name| ProtectedVictim { id, name })
+            }
+        },
+        _ => esi::resolve_protected_victim_name(kind, &query)
+            .map(|(id, name)| ProtectedVictim { id, name }),
     };
     match result {
-        Ok(name) => {
-            let _ = tx.send(WorkerEvent::ProtectedVictimResolved {
-                kind,
-                victim: ProtectedVictim { id, name },
-            });
+        Ok(victim) => {
+            let _ = tx.send(WorkerEvent::ProtectedVictimResolved { kind, victim });
             let _ = tx.send(WorkerEvent::Finished);
         }
         Err(error) => {
@@ -241,10 +322,14 @@ pub(super) fn check_zkill_statuses(
         };
         if tx
             .send(WorkerEvent::Status(format!(
-                "Checking recent {mail_type} for {} on zKillboard ({}/{})...",
+                "zKillboard · {} ({}) · Checking whether {} recent {mail_type} {} already reported (batch {}/{}). Killmail IDs: {}",
                 check.character_name,
+                check.character_id,
+                check.candidates.len(),
+                if check.candidates.len() == 1 { "is" } else { "are" },
                 index + 1,
-                checks.len()
+                checks.len(),
+                formatted_candidate_ids(&check.candidates),
             )))
             .is_err()
         {
@@ -255,6 +340,7 @@ pub(super) fn check_zkill_statuses(
                 if tx
                     .send(WorkerEvent::LookupComplete {
                         character_name: check.character_name.clone(),
+                        character_id: check.character_id,
                         checked_ids: check
                             .candidates
                             .iter()
@@ -272,6 +358,7 @@ pub(super) fn check_zkill_statuses(
                 if tx
                     .send(WorkerEvent::LookupIncomplete {
                         character_name: check.character_name.clone(),
+                        character_id: check.character_id,
                     })
                     .is_err()
                 {
@@ -282,6 +369,7 @@ pub(super) fn check_zkill_statuses(
                 if tx
                     .send(WorkerEvent::LookupFailed {
                         character_name: check.character_name.clone(),
+                        character_id: check.character_id,
                         error,
                     })
                     .is_err()
@@ -294,6 +382,14 @@ pub(super) fn check_zkill_statuses(
             thread::sleep(REQUEST_SPACING);
         }
     }
+}
+
+fn formatted_candidate_ids(candidates: &[StatusCandidate]) -> String {
+    candidates
+        .iter()
+        .map(|candidate| candidate.id.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn check_zkill_status(check: &ZkillStatusCheck) -> Result<Option<HashSet<u64>>, String> {

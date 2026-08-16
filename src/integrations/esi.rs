@@ -1,6 +1,6 @@
 use crate::{
     integrations::auth,
-    models::{Character, Killmail},
+    models::{Character, Killmail, ProtectedVictimKind},
 };
 use reqwest::blocking::Client;
 use reqwest::header::USER_AGENT;
@@ -91,6 +91,47 @@ pub fn resolve_character_name(id: u64) -> Result<String, String> {
 
 pub fn resolve_corporation_name(id: u64) -> Result<String, String> {
     corporation_name(&Client::new(), id)
+}
+
+pub fn resolve_protected_victim_name(
+    kind: ProtectedVictimKind,
+    name: &str,
+) -> Result<(u64, String), String> {
+    let response: UniverseIds = Client::new()
+        .post(format!("{ESI}/universe/ids/"))
+        .header(USER_AGENT, USER_AGENT_VALUE)
+        .json(&[name])
+        .send()
+        .map_err(|error| format!("EVE name lookup failed for {name}: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("EVE name lookup failed for {name}: {error}"))?
+        .json()
+        .map_err(|error| format!("EVE name response invalid for {name}: {error}"))?;
+    matching_protected_victim(response, kind, name)
+        .map(|entity| (entity.id, entity.name))
+        .ok_or_else(|| {
+            format!(
+                "no exact {} named {name} was found",
+                match kind {
+                    ProtectedVictimKind::Character => "character",
+                    ProtectedVictimKind::Corporation => "corporation",
+                }
+            )
+        })
+}
+
+fn matching_protected_victim(
+    response: UniverseIds,
+    kind: ProtectedVictimKind,
+    requested_name: &str,
+) -> Option<UniverseEntity> {
+    let entities = match kind {
+        ProtectedVictimKind::Character => response.characters,
+        ProtectedVictimKind::Corporation => response.corporations,
+    };
+    entities
+        .into_iter()
+        .find(|entity| entity.name.eq_ignore_ascii_case(requested_name))
 }
 
 fn add_pending(
@@ -188,6 +229,20 @@ struct Name {
     name: String,
 }
 
+#[derive(Deserialize)]
+struct UniverseIds {
+    #[serde(default)]
+    characters: Vec<UniverseEntity>,
+    #[serde(default)]
+    corporations: Vec<UniverseEntity>,
+}
+
+#[derive(Deserialize)]
+struct UniverseEntity {
+    id: u64,
+    name: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,6 +251,26 @@ mod tests {
     fn user_agent_identifies_the_application_and_source() {
         assert!(USER_AGENT_VALUE.starts_with("ekmp/"));
         assert!(USER_AGENT_VALUE.contains("https://github.com/wims80/ekmp"));
+    }
+
+    #[test]
+    fn protected_victim_name_resolution_uses_the_selected_category() {
+        let response = UniverseIds {
+            characters: vec![UniverseEntity {
+                id: 42,
+                name: "Shared Name".into(),
+            }],
+            corporations: vec![UniverseEntity {
+                id: 84,
+                name: "Shared Name".into(),
+            }],
+        };
+
+        let corporation =
+            matching_protected_victim(response, ProtectedVictimKind::Corporation, "shared name")
+                .unwrap();
+
+        assert_eq!(corporation.id, 84);
     }
 
     fn character(id: u64, name: &str) -> Character {

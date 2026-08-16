@@ -3,7 +3,11 @@ use crate::{
     killmail::{
         bulk_submission_candidates, individual_submission_candidate, report_state, ReportState,
     },
-    models::{Character, Killmail, ProtectedVictimKind},
+    models::{Character, Killmail},
+};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
 };
 use std::{sync::mpsc, thread};
 
@@ -42,11 +46,28 @@ impl App {
     }
 
     pub(super) fn begin_auth(&mut self) {
-        self.start_operation(
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let worker_cancellation = Arc::clone(&cancellation);
+        self.start_cancellable_operation(
             Operation::Authenticate,
             "Authorize the character in your browser...",
-            worker::authenticate,
+            cancellation,
+            move |tx| worker::authenticate(tx, worker_cancellation),
         );
+    }
+
+    pub(super) fn cancel_authentication(&mut self) {
+        let Some(active) = self.active_operation.as_ref() else {
+            return;
+        };
+        if !matches!(active.kind, Operation::Authenticate) {
+            return;
+        }
+        if let Some(cancellation) = &active.cancellation {
+            cancellation.store(true, Ordering::Relaxed);
+        }
+        self.active_operation = None;
+        self.log("Character connection cancelled");
     }
 
     pub(super) fn remove_character(&mut self, character: Character) {
@@ -91,45 +112,27 @@ impl App {
             self.log("Another operation is already in progress");
             return;
         }
-        let id = match self.new_protected_victim_id.trim().parse::<u64>() {
-            Ok(id) if id > 0 => id,
-            _ => {
-                self.log("Enter a valid numeric EVE character or corporation ID");
+        let query = self.new_protected_victim_query.trim().to_owned();
+        if query.is_empty() {
+            self.log("Enter an exact EVE character or corporation name, or a numeric EVE ID");
+            return;
+        }
+        let kind = self.new_protected_victim_kind;
+        if let Ok(id) = query.parse::<u64>() {
+            if id == 0 {
+                self.log("Enter a positive numeric EVE ID");
                 return;
             }
-        };
-        let kind = self.new_protected_victim_kind;
-        let automatically_present = match kind {
-            ProtectedVictimKind::Character => {
-                self.store.characters.iter().any(|entry| entry.id == id)
+            if self.protected_victim_already_present(kind, id) {
+                self.log("That protected victim is already in the list");
+                return;
             }
-            ProtectedVictimKind::Corporation => self
-                .store
-                .characters
-                .iter()
-                .any(|entry| entry.corporation_id == Some(id)),
-        };
-        let manually_present = match kind {
-            ProtectedVictimKind::Character => self
-                .store
-                .manually_protected_characters
-                .iter()
-                .any(|entry| entry.id == id),
-            ProtectedVictimKind::Corporation => self
-                .store
-                .manually_protected_corporations
-                .iter()
-                .any(|entry| entry.id == id),
-        };
-        if automatically_present || manually_present {
-            self.log("That protected victim is already in the list");
-            return;
         }
 
         self.start_operation(
             Operation::AddProtectedVictim,
-            format!("Resolving EVE ID {id}..."),
-            move |tx| worker::resolve_protected_victim(kind, id, tx),
+            format!("Resolving protected victim {query}..."),
+            move |tx| worker::resolve_protected_victim(kind, query, tx),
         );
     }
 
@@ -183,6 +186,26 @@ impl App {
         status: impl Into<String>,
         work: impl FnOnce(mpsc::Sender<WorkerEvent>) + Send + 'static,
     ) {
+        self.start_operation_with_cancellation(kind, status, None, work);
+    }
+
+    fn start_cancellable_operation(
+        &mut self,
+        kind: Operation,
+        status: impl Into<String>,
+        cancellation: Arc<AtomicBool>,
+        work: impl FnOnce(mpsc::Sender<WorkerEvent>) + Send + 'static,
+    ) {
+        self.start_operation_with_cancellation(kind, status, Some(cancellation), work);
+    }
+
+    fn start_operation_with_cancellation(
+        &mut self,
+        kind: Operation,
+        status: impl Into<String>,
+        cancellation: Option<Arc<AtomicBool>>,
+        work: impl FnOnce(mpsc::Sender<WorkerEvent>) + Send + 'static,
+    ) {
         if self.is_busy() {
             self.log("Another operation is already in progress");
             return;
@@ -194,6 +217,10 @@ impl App {
         let (tx, events) = mpsc::channel();
         thread::spawn(move || work(tx));
         self.log(status);
-        self.active_operation = Some(ActiveOperation { kind, events });
+        self.active_operation = Some(ActiveOperation {
+            kind,
+            events,
+            cancellation,
+        });
     }
 }

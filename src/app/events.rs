@@ -3,7 +3,7 @@ use super::{
 };
 use crate::{
     killmail::remove_killmails_for_removed_character,
-    models::{ProtectedVictimKind, ZkillCacheEntry},
+    models::{Character, Killmail, ProtectedVictimKind, ZkillCacheEntry},
 };
 
 impl App {
@@ -59,6 +59,14 @@ impl App {
                 }
             }
             super::WorkerEvent::ProtectedVictimResolved { kind, victim } => {
+                if self.protected_victim_already_present(kind, victim.id) {
+                    self.new_protected_victim_query.clear();
+                    self.log(format!(
+                        "{} ({}) is already a protected victim",
+                        victim.name, victim.id
+                    ));
+                    return;
+                }
                 let label = match kind {
                     ProtectedVictimKind::Character => {
                         self.store
@@ -73,7 +81,7 @@ impl App {
                         "corporation"
                     }
                 };
-                self.new_protected_victim_id.clear();
+                self.new_protected_victim_query.clear();
                 self.persist_or_log_error();
                 self.log(format!(
                     "Added protected {label}: {} ({})",
@@ -81,21 +89,38 @@ impl App {
                 ));
             }
             super::WorkerEvent::KillmailsLoaded(killmails) => {
-                let count = killmails.len();
+                let fetched_count = killmails.len();
+                let source_summaries = self
+                    .store
+                    .characters
+                    .iter()
+                    .map(|character| character_killmail_summary(character, &killmails))
+                    .collect::<Vec<_>>();
+                let source_count = self.store.characters.len();
                 self.store.cached_killmails = killmails;
                 self.prune_persisted_reported_killmails();
+                let retained_count = self.store.cached_killmails.len();
+                let removed_reported = fetched_count.saturating_sub(retained_count);
                 self.persist_or_log_error();
+                for summary in source_summaries {
+                    self.log(summary);
+                }
                 self.log(format!(
-                    "Loaded {count} unique recent killmails; checking zKillboard status..."
+                    "Review queue · Combined {fetched_count} unique killmail IDs from {source_count} authenticated character{}. Duplicate IDs visible to multiple characters are counted once. Retained {retained_count}; removed {removed_reported} already known as reported.",
+                    if source_count == 1 { "" } else { "s" },
                 ));
             }
             super::WorkerEvent::LookupComplete {
                 character_name,
+                character_id,
                 checked_ids,
                 reported_ids,
                 checked_at,
             } => {
                 let checked_count = checked_ids.len();
+                let reported_count = reported_ids.len();
+                let unreported_count = checked_count.saturating_sub(reported_count);
+                let ids = formatted_killmail_ids(checked_ids.iter().copied());
                 for id in checked_ids {
                     let already_reported = self
                         .store
@@ -113,17 +138,21 @@ impl App {
                 self.prune_persisted_reported_killmails();
                 self.persist_or_log_error();
                 self.log(format!(
-                    "Completed status check for {character_name} ({checked_count} killmails checked)"
+                    "zKillboard · {character_name} ({character_id}) · Checked {checked_count} killmail IDs: {reported_count} already reported and {unreported_count} confirmed unreported. Killmail IDs: {ids}"
                 ));
             }
             super::WorkerEvent::LookupFailed {
                 character_name,
+                character_id,
                 error,
             } => self.log(format!(
-                "Could not check zKillboard status for {character_name}: {error}"
+                "zKillboard · {character_name} ({character_id}) · Status check failed; affected killmails remain unavailable for posting. {error}"
             )),
-            super::WorkerEvent::LookupIncomplete { character_name } => self.log(format!(
-                "Could not confirm zKillboard status for {character_name} within the three-page lookup limit"
+            super::WorkerEvent::LookupIncomplete {
+                character_name,
+                character_id,
+            } => self.log(format!(
+                "zKillboard · {character_name} ({character_id}) · Status check reached the three-page lookup limit; affected killmails remain unavailable for posting"
             )),
             super::WorkerEvent::PostComplete {
                 killmail_id,
@@ -208,5 +237,78 @@ impl App {
             }
             None => {}
         }
+    }
+}
+
+fn character_killmail_summary(character: &Character, killmails: &[Killmail]) -> String {
+    let character_mails = killmails
+        .iter()
+        .filter(|mail| mail.sources.iter().any(|source| source.id == character.id))
+        .collect::<Vec<_>>();
+    let losses = character_mails
+        .iter()
+        .filter(|mail| mail.victim_id == Some(character.id))
+        .count();
+    let kills = character_mails.len() - losses;
+    let ids = formatted_killmail_ids(character_mails.iter().map(|mail| mail.id));
+    format!(
+        "ESI · {} ({}) · Returned {} recent killmails: {kills} kills and {losses} losses. Killmail IDs: {ids}",
+        character.name,
+        character.id,
+        character_mails.len(),
+    )
+}
+
+fn formatted_killmail_ids(ids: impl IntoIterator<Item = u64>) -> String {
+    let mut ids = ids.into_iter().collect::<Vec<_>>();
+    ids.sort_unstable();
+    ids.into_iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::CharacterSource;
+
+    fn mail(id: u64, source_id: u64, victim_id: Option<u64>) -> Killmail {
+        Killmail {
+            id,
+            hash: "hash".into(),
+            sources: vec![CharacterSource {
+                id: source_id,
+                name: "Pilot".into(),
+            }],
+            victim_id,
+            victim_corporation_id: None,
+            victim: "Victim".into(),
+            ship: "Ship".into(),
+            time: "Time".into(),
+        }
+    }
+
+    #[test]
+    fn character_activity_summary_identifies_source_counts_and_killmail_ids() {
+        let character = Character {
+            id: 95_742_577,
+            name: "Pilot".into(),
+            refresh_token: None,
+            corporation_id: None,
+            corporation_name: None,
+        };
+        let killmails = vec![
+            mail(30, character.id, None),
+            mail(20, character.id, Some(character.id)),
+            mail(10, 123, None),
+        ];
+
+        let summary = character_killmail_summary(&character, &killmails);
+
+        assert!(summary.contains("Pilot (95742577)"));
+        assert!(summary.contains("2 recent killmails: 1 kills and 1 losses"));
+        assert!(summary.contains("Killmail IDs: 20, 30"));
+        assert!(!summary.contains("10,"));
     }
 }

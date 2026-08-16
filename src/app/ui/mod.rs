@@ -39,47 +39,47 @@ impl App {
             .fill(SURFACE)
             .inner_margin(egui::Margin::symmetric(20, 16))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label(
-                            egui::RichText::new("EVE KILLMAIL PUBLISHER")
-                                .size(11.0)
-                                .strong()
-                                .color(ACCENT),
-                        );
-                        ui.label(
-                            egui::RichText::new("Review before you report")
-                                .size(22.0)
-                                .strong(),
-                        );
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        status_badge(ui, self.is_busy(), &pill_status);
-                        if self.is_authenticating() && ui.button("Cancel connection").clicked() {
-                            cancel_authentication = true;
-                        }
-                        if let Some((label, message)) = &simulation_notice {
-                            let response = egui::Frame::new()
-                                .fill(ACCENT.gamma_multiply(0.14))
-                                .stroke(egui::Stroke::new(1.0, ACCENT.gamma_multiply(0.7)))
-                                .corner_radius(12)
-                                .inner_margin(egui::Margin::symmetric(10, 5))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        egui::RichText::new(label)
-                                            .size(13.0)
-                                            .strong()
-                                            .color(ACCENT),
-                                    );
-                                })
-                                .response;
-                            response.on_hover_ui(|ui| {
-                                ui.set_max_width(460.0);
-                                ui.label(egui::RichText::new(message).color(ACCENT));
-                            });
-                        }
-                    });
-                });
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), 48.0),
+                    egui::Layout::left_to_right(egui::Align::Center),
+                    |ui| {
+                        ui.vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new("EVE KILLMAIL PUBLISHER")
+                                    .size(28.0)
+                                    .strong()
+                                    .color(ACCENT),
+                            );
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            status_badge(ui, self.is_busy(), &pill_status);
+                            if self.is_authenticating() && ui.button("Cancel connection").clicked()
+                            {
+                                cancel_authentication = true;
+                            }
+                            if let Some((label, message)) = &simulation_notice {
+                                let response = egui::Frame::new()
+                                    .fill(ACCENT.gamma_multiply(0.14))
+                                    .stroke(egui::Stroke::new(1.0, ACCENT.gamma_multiply(0.7)))
+                                    .corner_radius(12)
+                                    .inner_margin(egui::Margin::symmetric(10, 5))
+                                    .show(ui, |ui| {
+                                        ui.label(
+                                            egui::RichText::new(label)
+                                                .size(13.0)
+                                                .strong()
+                                                .color(ACCENT),
+                                        );
+                                    })
+                                    .response;
+                                response.on_hover_ui(|ui| {
+                                    ui.set_max_width(460.0);
+                                    ui.label(egui::RichText::new(message).color(ACCENT));
+                                });
+                            }
+                        });
+                    },
+                );
             });
         if cancel_authentication {
             self.cancel_authentication();

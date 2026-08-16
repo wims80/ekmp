@@ -130,6 +130,51 @@ cargo run
 cargo test
 ```
 
+### Offline simulation
+
+Development builds can run against synthetic data without authenticating with EVE or contacting
+ESI, the EVE image service, the system credential store, or zKillboard:
+
+```sh
+cargo run --features dev-tools -- --scenario mixed
+cargo run --features dev-tools -- --scenario errors
+```
+
+The `mixed` scenario covers eligible, protected, already reported, and shared-source killmails. The
+`errors` scenario contains a confirmed-unreported killmail whose simulated submission fails. Each
+run starts from its fixture and keeps changes in memory. To debug persistence separately, provide an
+explicit development-only state file:
+
+```sh
+cargo run --features dev-tools -- --scenario mixed --dev-state target/ekmp-dev-state.json
+```
+
+Simulation is compile-time opt-in, displays a visible banner, uses zero request spacing, and cannot
+fall through to the live integrations. Its submission results are recorded in memory and still
+require the same explicit individual or confirmed bulk actions as production. Scenario definitions
+live in `dev/scenarios/` and must contain only invented IDs, hashes, names, and outcomes.
+See [SIMULATOR-RUNBOOK.md](SIMULATOR-RUNBOOK.md) for manual workflows, scenario authoring, and
+agent-driven UI testing.
+
+### Agent-driven UI testing
+
+The `dev-tools` feature enables eframe's AccessKit inspection support. Install and configure the
+`egui_mcp` MCP server for the development agent, then launch an inspectable simulator:
+
+```sh
+cargo install --locked egui_mcp
+EGUI_INSPECTION=1 cargo run --features dev-tools -- --scenario mixed
+```
+
+An agent can inspect the semantic UI tree, activate uniquely labelled controls, enter protected
+victim data, and capture screenshots without relying on screen coordinates. For safety, the
+application refuses to start with `EGUI_INSPECTION` enabled unless a simulator scenario was also
+selected. Repeatable headless UI workflows use `egui_kittest` and run as part of
+`cargo test --all-features`.
+
+The real HTTP adapters are tested against short-lived localhost `httpmock` servers. No standalone
+mock service or database is required.
+
 ### Windows
 
 Install Rust with the default `x86_64-pc-windows-msvc` toolchain and install

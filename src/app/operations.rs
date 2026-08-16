@@ -26,11 +26,12 @@ impl App {
 
         let store = self.store.clone();
         let killmails = self.store.cached_killmails.clone();
+        let backend = Arc::clone(&self.backend);
         self.start_operation(
             Operation::CheckCachedStatuses,
             format!("Checking zKillboard status for {unknown_count} cached killmails..."),
             move |tx| {
-                worker::check_zkill_statuses(&store, &killmails, &tx);
+                worker::check_zkill_statuses(backend.as_ref(), &store, &killmails, &tx);
                 let _ = tx.send(WorkerEvent::Finished);
             },
         );
@@ -38,21 +39,23 @@ impl App {
 
     pub(super) fn migrate_refresh_tokens(&mut self) {
         let characters = self.store.characters.clone();
+        let backend = Arc::clone(&self.backend);
         self.start_operation(
             Operation::MigrateRefreshTokens,
             "Moving refresh tokens to the system credential store...",
-            move |tx| worker::migrate_refresh_tokens(characters, tx),
+            move |tx| worker::migrate_refresh_tokens(backend, characters, tx),
         );
     }
 
     pub(super) fn begin_auth(&mut self) {
         let cancellation = Arc::new(AtomicBool::new(false));
         let worker_cancellation = Arc::clone(&cancellation);
+        let backend = Arc::clone(&self.backend);
         self.start_cancellable_operation(
             Operation::Authenticate,
             "Authorize the character in your browser...",
             cancellation,
-            move |tx| worker::authenticate(tx, worker_cancellation),
+            move |tx| worker::authenticate(backend, tx, worker_cancellation),
         );
     }
 
@@ -72,10 +75,11 @@ impl App {
 
     pub(super) fn remove_character(&mut self, character: Character) {
         let name = character.name.clone();
+        let backend = Arc::clone(&self.backend);
         self.start_operation(
             Operation::RemoveCharacter,
             format!("Removing {name}..."),
-            move |tx| worker::remove_character(character, tx),
+            move |tx| worker::remove_character(backend, character, tx),
         );
     }
 
@@ -89,8 +93,9 @@ impl App {
             return;
         }
         let store = self.store.clone();
+        let backend = Arc::clone(&self.backend);
         self.start_operation(Operation::Load, "Loading recent killmails...", move |tx| {
-            worker::load_killmails_and_statuses(store, tx);
+            worker::load_killmails_and_statuses(backend, store, tx);
         });
     }
 
@@ -118,6 +123,7 @@ impl App {
             return;
         }
         let kind = self.new_protected_victim_kind;
+        let backend = Arc::clone(&self.backend);
         if let Ok(id) = query.parse::<u64>() {
             if id == 0 {
                 self.log("Enter a positive numeric EVE ID");
@@ -132,7 +138,7 @@ impl App {
         self.start_operation(
             Operation::AddProtectedVictim,
             format!("Resolving protected victim {query}..."),
-            move |tx| worker::resolve_protected_victim(kind, query, tx),
+            move |tx| worker::resolve_protected_victim(backend, kind, query, tx),
         );
     }
 
@@ -166,6 +172,7 @@ impl App {
             total,
             ..PostStats::default()
         };
+        let backend = Arc::clone(&self.backend);
         self.start_operation(
             Operation::Post(mode),
             match mode {
@@ -176,7 +183,7 @@ impl App {
                     format!("Starting submission of killmail {first_id}...")
                 }
             },
-            move |tx| worker::post_killmails(mails, tx),
+            move |tx| worker::post_killmails(backend, mails, tx),
         );
     }
 
@@ -215,7 +222,11 @@ impl App {
             return;
         }
         let (tx, events) = mpsc::channel();
-        thread::spawn(move || work(tx));
+        if self.run_jobs_inline {
+            work(tx);
+        } else {
+            thread::spawn(move || work(tx));
+        }
         self.log(status);
         self.active_operation = Some(ActiveOperation {
             kind,

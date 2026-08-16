@@ -33,9 +33,18 @@ fn character_mail_page(
     mail_type: &str,
     page: usize,
 ) -> Result<Vec<KillEntry>, String> {
+    character_mail_page_at(API, character_id, mail_type, page)
+}
+
+fn character_mail_page_at(
+    api: &str,
+    character_id: u64,
+    mail_type: &str,
+    page: usize,
+) -> Result<Vec<KillEntry>, String> {
     let response = Client::new()
         .get(format!(
-            "{API}/{mail_type}/characterID/{character_id}/page/{page}/"
+            "{api}/{mail_type}/characterID/{character_id}/page/{page}/"
         ))
         .header(USER_AGENT, USER_AGENT_VALUE)
         .header(ACCEPT_ENCODING, "gzip")
@@ -45,8 +54,12 @@ fn character_mail_page(
 }
 
 pub fn post(mail: &Killmail) -> Result<PostOutcome, String> {
+    post_at(API, mail)
+}
+
+fn post_at(api: &str, mail: &Killmail) -> Result<PostOutcome, String> {
     let response = Client::new()
-        .post(format!("{API}/killmail/add/{}/{}/", mail.id, mail.hash))
+        .post(format!("{api}/killmail/add/{}/{}/", mail.id, mail.hash))
         .header(USER_AGENT, USER_AGENT_VALUE)
         .header(ACCEPT_ENCODING, "gzip")
         .send()
@@ -100,6 +113,24 @@ struct PostResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::models::CharacterSource;
+    use httpmock::prelude::*;
+
+    fn mail() -> Killmail {
+        Killmail {
+            id: 42,
+            hash: "fixture-hash".into(),
+            sources: vec![CharacterSource {
+                id: 1,
+                name: "Pilot".into(),
+            }],
+            victim_id: Some(2),
+            victim_corporation_id: Some(3),
+            victim: "Victim".into(),
+            ship: "Ship".into(),
+            time: "2026-08-16T10:00:00Z".into(),
+        }
+    }
 
     #[test]
     fn parses_new_and_existing_post_outcomes() {
@@ -153,5 +184,41 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![42, 43]
         );
+    }
+
+    #[test]
+    fn lookup_uses_the_expected_http_path_and_headers() {
+        let server = MockServer::start();
+        let request = server.mock(|when, then| {
+            when.method(GET)
+                .path("/kills/characterID/7/page/2/")
+                .header("accept-encoding", "gzip");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"[{"killmail_id":42,"killmail_time":"2026-08-16T10:00:00Z"}]"#);
+        });
+
+        let entries = character_mail_page_at(&server.base_url(), 7, "kills", 2).unwrap();
+
+        assert_eq!(entries[0].killmail_id, 42);
+        request.assert();
+    }
+
+    #[test]
+    fn submission_uses_the_expected_http_path_and_decodes_the_outcome() {
+        let server = MockServer::start();
+        let request = server.mock(|when, then| {
+            when.method(POST).path("/killmail/add/42/fixture-hash/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(
+                    r#"{"status":"success","new":true,"url":"https://example.invalid/kill/42/"}"#,
+                );
+        });
+
+        let outcome = post_at(&server.base_url(), &mail()).unwrap();
+
+        assert!(outcome.new);
+        request.assert();
     }
 }

@@ -15,14 +15,22 @@ const USER_AGENT_VALUE: &str = concat!(
 );
 
 pub fn load_killmails(chars: &[Character]) -> Result<Vec<Killmail>, String> {
+    load_killmails_at(ESI, chars, auth::access_token)
+}
+
+fn load_killmails_at(
+    esi: &str,
+    chars: &[Character],
+    mut access_token: impl FnMut(&Character) -> Result<String, String>,
+) -> Result<Vec<Killmail>, String> {
     let client = Client::new();
     let mut pending = Vec::new();
     let mut positions = HashMap::new();
     for c in chars {
         let response: Vec<Recent> = client
-            .get(format!("{ESI}/characters/{}/killmails/recent/", c.id))
+            .get(format!("{esi}/characters/{}/killmails/recent/", c.id))
             .header(USER_AGENT, USER_AGENT_VALUE)
-            .bearer_auth(auth::access_token(c)?)
+            .bearer_auth(access_token(c)?)
             .send()
             .map_err(|e| e.to_string())?
             .error_for_status()
@@ -39,7 +47,7 @@ pub fn load_killmails(chars: &[Character]) -> Result<Vec<Killmail>, String> {
             let recent = pending.recent;
             let detail: Detail = client
                 .get(format!(
-                    "{ESI}/killmails/{}/{}",
+                    "{esi}/killmails/{}/{}",
                     recent.killmail_id, recent.killmail_hash
                 ))
                 .header(USER_AGENT, USER_AGENT_VALUE)
@@ -52,13 +60,13 @@ pub fn load_killmails(chars: &[Character]) -> Result<Vec<Killmail>, String> {
             let victim = detail
                 .victim
                 .character_id
-                .map(|id| character_name(&client, id))
+                .map(|id| character_name(&client, esi, id))
                 .transpose()?
                 .unwrap_or_else(|| "Unknown character".into());
             let ship = detail
                 .victim
                 .ship_type_id
-                .map(|id| ship_name(&client, id))
+                .map(|id| ship_name(&client, esi, id))
                 .transpose()?
                 .unwrap_or_else(|| "Unknown ship".into());
             Ok(Killmail {
@@ -76,9 +84,13 @@ pub fn load_killmails(chars: &[Character]) -> Result<Vec<Killmail>, String> {
 }
 
 pub fn refresh_character_affiliation(character: &mut Character) -> Result<(), String> {
+    refresh_character_affiliation_at(ESI, character)
+}
+
+fn refresh_character_affiliation_at(esi: &str, character: &mut Character) -> Result<(), String> {
     let client = Client::new();
-    let info = character_info(&client, character.id)?;
-    let corporation_name = corporation_name(&client, info.corporation_id)?;
+    let info = character_info(&client, esi, character.id)?;
+    let corporation_name = corporation_name(&client, esi, info.corporation_id)?;
     character.name = info.name;
     character.corporation_id = Some(info.corporation_id);
     character.corporation_name = Some(corporation_name);
@@ -86,19 +98,27 @@ pub fn refresh_character_affiliation(character: &mut Character) -> Result<(), St
 }
 
 pub fn resolve_character_name(id: u64) -> Result<String, String> {
-    character_info(&Client::new(), id).map(|info| info.name)
+    character_info(&Client::new(), ESI, id).map(|info| info.name)
 }
 
 pub fn resolve_corporation_name(id: u64) -> Result<String, String> {
-    corporation_name(&Client::new(), id)
+    corporation_name(&Client::new(), ESI, id)
 }
 
 pub fn resolve_protected_victim_name(
     kind: ProtectedVictimKind,
     name: &str,
 ) -> Result<(u64, String), String> {
+    resolve_protected_victim_name_at(ESI, kind, name)
+}
+
+fn resolve_protected_victim_name_at(
+    esi: &str,
+    kind: ProtectedVictimKind,
+    name: &str,
+) -> Result<(u64, String), String> {
     let response: UniverseIds = Client::new()
-        .post(format!("{ESI}/universe/ids/"))
+        .post(format!("{esi}/universe/ids/"))
         .header(USER_AGENT, USER_AGENT_VALUE)
         .json(&[name])
         .send()
@@ -162,13 +182,13 @@ struct PendingKillmail {
     sources: Vec<crate::models::CharacterSource>,
 }
 
-fn character_name(client: &Client, id: u64) -> Result<String, String> {
-    character_info(client, id).map(|info| info.name)
+fn character_name(client: &Client, esi: &str, id: u64) -> Result<String, String> {
+    character_info(client, esi, id).map(|info| info.name)
 }
 
-fn character_info(client: &Client, id: u64) -> Result<CharacterInfo, String> {
+fn character_info(client: &Client, esi: &str, id: u64) -> Result<CharacterInfo, String> {
     client
-        .get(format!("{ESI}/characters/{id}/"))
+        .get(format!("{esi}/characters/{id}/"))
         .header(USER_AGENT, USER_AGENT_VALUE)
         .send()
         .map_err(|e| format!("Character name lookup failed for {id}: {e}"))?
@@ -178,9 +198,9 @@ fn character_info(client: &Client, id: u64) -> Result<CharacterInfo, String> {
         .map_err(|e| format!("Character response invalid for {id}: {e}"))
 }
 
-fn corporation_name(client: &Client, id: u64) -> Result<String, String> {
+fn corporation_name(client: &Client, esi: &str, id: u64) -> Result<String, String> {
     let info: Name = client
-        .get(format!("{ESI}/corporations/{id}/"))
+        .get(format!("{esi}/corporations/{id}/"))
         .header(USER_AGENT, USER_AGENT_VALUE)
         .send()
         .map_err(|e| format!("Corporation name lookup failed for {id}: {e}"))?
@@ -190,9 +210,9 @@ fn corporation_name(client: &Client, id: u64) -> Result<String, String> {
         .map_err(|e| format!("Corporation name response invalid for {id}: {e}"))?;
     Ok(info.name)
 }
-fn ship_name(client: &Client, id: u64) -> Result<String, String> {
+fn ship_name(client: &Client, esi: &str, id: u64) -> Result<String, String> {
     let info: Name = client
-        .get(format!("{ESI}/universe/types/{id}/"))
+        .get(format!("{esi}/universe/types/{id}/"))
         .header(USER_AGENT, USER_AGENT_VALUE)
         .send()
         .map_err(|e| format!("Ship name lookup failed for type {id}: {e}"))?
@@ -246,6 +266,7 @@ struct UniverseEntity {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use httpmock::prelude::*;
 
     #[test]
     fn user_agent_identifies_the_application_and_source() {
@@ -310,5 +331,71 @@ mod tests {
         assert_eq!(pending[0].sources.len(), 2);
         assert_eq!(pending[0].sources[0].name, "One");
         assert_eq!(pending[0].sources[1].name, "Two");
+    }
+
+    #[test]
+    fn loads_killmails_through_the_configured_http_endpoint() {
+        let server = MockServer::start();
+        let recent = server.mock(|when, then| {
+            when.method(GET)
+                .path("/characters/1/killmails/recent/")
+                .header("authorization", "Bearer synthetic-token");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"[{"killmail_id":42,"killmail_hash":"fixture-hash"}]"#);
+        });
+        let detail = server.mock(|when, then| {
+            when.method(GET).path("/killmails/42/fixture-hash");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"killmail_time":"2026-08-16T10:00:00Z","victim":{"character_id":2,"corporation_id":20,"ship_type_id":3}}"#);
+        });
+        let victim = server.mock(|when, then| {
+            when.method(GET).path("/characters/2/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"name":"Fixture Victim","corporation_id":20}"#);
+        });
+        let ship = server.mock(|when, then| {
+            when.method(GET).path("/universe/types/3/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"name":"Fixture Ship"}"#);
+        });
+
+        let mails = load_killmails_at(&server.base_url(), &[character(1, "Pilot")], |_| {
+            Ok("synthetic-token".into())
+        })
+        .unwrap();
+
+        assert_eq!(mails.len(), 1);
+        assert_eq!(mails[0].id, 42);
+        assert_eq!(mails[0].victim, "Fixture Victim");
+        assert_eq!(mails[0].ship, "Fixture Ship");
+        recent.assert();
+        detail.assert();
+        victim.assert();
+        ship.assert();
+    }
+
+    #[test]
+    fn protected_victim_lookup_uses_the_configured_http_endpoint() {
+        let server = MockServer::start();
+        let lookup = server.mock(|when, then| {
+            when.method(POST).path("/universe/ids/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"characters":[{"id":42,"name":"Fixture Pilot"}]}"#);
+        });
+
+        let result = resolve_protected_victim_name_at(
+            &server.base_url(),
+            ProtectedVictimKind::Character,
+            "Fixture Pilot",
+        )
+        .unwrap();
+
+        assert_eq!(result, (42, "Fixture Pilot".into()));
+        lookup.assert();
     }
 }

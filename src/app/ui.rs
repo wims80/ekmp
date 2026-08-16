@@ -83,6 +83,16 @@ impl App {
     }
 
     fn show_warnings(&self, ui: &mut egui::Ui) {
+        if let Some(name) = &self.simulation_name {
+            notice(
+                ui,
+                ACCENT,
+                "SIMULATION",
+                &format!(
+                    "Offline scenario {name:?}. No EVE, zKillboard, credential-store, or image-service requests can be made."
+                ),
+            );
+        }
         if let Some(error) = &self.persistence_blocked {
             notice(
                 ui,
@@ -223,13 +233,16 @@ impl App {
                                     }
                                 });
                             });
-                            if ui
-                                .add_enabled(
-                                    self.persisted_controls_enabled(),
-                                    egui::Button::new("Disconnect"),
+                            let enabled = self.persisted_controls_enabled();
+                            let response = ui.add_enabled(enabled, egui::Button::new("Disconnect"));
+                            response.widget_info(|| {
+                                egui::WidgetInfo::labeled(
+                                    egui::WidgetType::Button,
+                                    enabled,
+                                    format!("Disconnect {}", character.name),
                                 )
-                                .clicked()
-                            {
+                            });
+                            if response.clicked() {
                                 remove_character = Some(character.clone());
                             }
                         });
@@ -403,11 +416,13 @@ impl App {
                         "Corporation",
                     );
                 });
+            let input_label = ui.label("Protected victim name or ID");
             ui.add(
                 egui::TextEdit::singleline(&mut self.new_protected_victim_query)
                     .hint_text("Exact name or EVE ID")
                     .desired_width(ui.available_width()),
-            );
+            )
+            .labelled_by(input_label.id);
             if ui
                 .add_enabled(
                     self.persisted_controls_enabled(),
@@ -466,14 +481,20 @@ impl App {
                         );
                     });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui
-                            .add_enabled(
-                                self.persisted_controls_enabled()
-                                    && !self.store.characters.is_empty(),
-                                egui::Button::new("↻  Refresh killmails").fill(SURFACE_RAISED),
+                        let enabled =
+                            self.persisted_controls_enabled() && !self.store.characters.is_empty();
+                        let response = ui.add_enabled(
+                            enabled,
+                            egui::Button::new("↻  Refresh killmails").fill(SURFACE_RAISED),
+                        );
+                        response.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                enabled,
+                                "Refresh killmails",
                             )
-                            .clicked()
-                        {
+                        });
+                        if response.clicked() {
                             self.refresh_killmails();
                         }
                     });
@@ -622,7 +643,11 @@ impl App {
                         ui.label(egui::RichText::new("✓").color(SUCCESS));
                         ui.label(format!("Killmail {} · {status}", report.killmail_id));
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.hyperlink_to("Open ↗", &report.url);
+                            if self.simulation_name.is_some() {
+                                ui.label("Simulated result");
+                            } else {
+                                ui.hyperlink_to("Open ↗", &report.url);
+                            }
                         });
                     });
                 }
@@ -648,9 +673,17 @@ impl App {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     cancel = ui.button("Cancel").clicked();
-                    confirm = ui
-                        .add(egui::Button::new("Post to zKillboard").fill(ACCENT_DARK))
-                        .clicked();
+                    let response = ui.add(
+                        egui::Button::new("Post to zKillboard").fill(ACCENT_DARK),
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            "Confirm bulk post",
+                        )
+                    });
+                    confirm = response.clicked();
                 });
             });
         if confirm {
@@ -683,9 +716,17 @@ impl App {
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
                     cancel = ui.button("Cancel").clicked();
-                    confirm = ui
-                        .add(egui::Button::new("Disconnect character").fill(DANGER))
-                        .clicked();
+                    let response = ui.add(
+                        egui::Button::new("Disconnect character").fill(DANGER),
+                    );
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            true,
+                            format!("Confirm disconnect {name}"),
+                        )
+                    });
+                    confirm = response.clicked();
                 });
             });
         if confirm {
@@ -831,7 +872,19 @@ fn killmail_card(
                     } else {
                         "Post to zKillboard"
                     };
-                    if ui.add_enabled(!busy, egui::Button::new(label)).clicked() {
+                    let response = ui.add_enabled(!busy, egui::Button::new(label));
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(
+                            egui::WidgetType::Button,
+                            !busy,
+                            if protected {
+                                format!("Post protected killmail {} anyway", mail.id)
+                            } else {
+                                format!("Post killmail {}", mail.id)
+                            },
+                        )
+                    });
+                    if response.clicked() {
                         *post_mail = Some(mail.clone());
                     }
                 });
@@ -883,10 +936,15 @@ fn protected_victim_row(
             );
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui
-                .add_enabled(enabled, egui::Button::new("Remove").small())
-                .clicked()
-            {
+            let response = ui.add_enabled(enabled, egui::Button::new("Remove").small());
+            response.widget_info(|| {
+                egui::WidgetInfo::labeled(
+                    egui::WidgetType::Button,
+                    enabled,
+                    format!("Remove protected {kind_label} {name} {id}"),
+                )
+            });
+            if response.clicked() {
                 *remove = Some((kind, id));
             }
         });
@@ -1033,5 +1091,65 @@ fn protection_reason_label(reason: &ProtectionReason) -> String {
         }
         ProtectionReason::ManuallyProtectedCharacter(name) => format!("character {name}"),
         ProtectionReason::ManuallyProtectedCorporation(name) => format!("corporation {name}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{integrations::simulation, models::ProtectedVictim};
+    use egui_kittest::{kittest::Queryable, Harness};
+    use std::sync::Arc;
+
+    fn mixed_harness() -> (Harness<'static, App>, Arc<simulation::SimulatorBackend>) {
+        let loaded = simulation::load("mixed").unwrap();
+        let backend = Arc::new(loaded.backend);
+        let app = App::simulated(loaded.store, backend.clone(), loaded.name, None, true);
+        let harness = Harness::builder()
+            .with_size(egui::vec2(1180.0, 760.0))
+            .build_eframe(move |_| app);
+        (harness, backend)
+    }
+
+    #[test]
+    fn simulator_ui_refreshes_and_posts_only_after_a_button_click() {
+        let (mut harness, backend) = mixed_harness();
+
+        assert!(backend.posted_ids().is_empty());
+        harness.get_by_label("Refresh killmails").click_accesskit();
+        harness.run_steps(4);
+
+        assert!(harness.query_by_label("Eligible Example").is_some());
+        assert!(backend.posted_ids().is_empty());
+
+        harness.get_by_label("Post killmail 9001").click_accesskit();
+        harness.run_steps(4);
+
+        assert_eq!(backend.posted_ids(), vec![9001]);
+        assert!(harness
+            .query_by_label_contains("Killmail 9001 · Submitted")
+            .is_some());
+    }
+
+    #[test]
+    fn bulk_confirmation_revalidates_protection_in_the_ui_workflow() {
+        let (mut harness, backend) = mixed_harness();
+        harness.get_by_label("Refresh killmails").click_accesskit();
+        harness.run_steps(4);
+        harness.get_by_label("Post eligible (2)").click_accesskit();
+        harness.run_steps(2);
+
+        harness
+            .state_mut()
+            .store
+            .manually_protected_characters
+            .push(ProtectedVictim {
+                id: 3006,
+                name: "Newly Protected".into(),
+            });
+        harness.get_by_label("Confirm bulk post").click_accesskit();
+        harness.run_steps(4);
+
+        assert_eq!(backend.posted_ids(), vec![9001]);
     }
 }

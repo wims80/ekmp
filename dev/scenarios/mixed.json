@@ -1,0 +1,106 @@
+{
+  "name": "mixed",
+  "initial_store": {
+    "characters": [
+      {
+        "id": 1001,
+        "name": "Simulated Alpha",
+        "corporation_id": 5001,
+        "corporation_name": "Simulated Industries"
+      }
+    ],
+    "zkill_status_cache_version": 2,
+    "show_protected_killmails": false,
+    "manually_protected_characters": [
+      { "id": 4001, "name": "Protected Example" }
+    ]
+  },
+  "connect_characters": [
+    {
+      "id": 1002,
+      "name": "Simulated Beta",
+      "corporation_id": 5002,
+      "corporation_name": "Fixture Corporation"
+    }
+  ],
+  "killmails": [
+    {
+      "id": 9001,
+      "hash": "synthetic-hash-9001",
+      "sources": [{ "id": 1001, "name": "Simulated Alpha" }],
+      "victim_id": 3001,
+      "victim_corporation_id": 6001,
+      "victim": "Eligible Example",
+      "ship": "Synthetic Frigate",
+      "time": "2026-08-16T10:00:00Z"
+    },
+    {
+      "id": 9002,
+      "hash": "synthetic-hash-9002",
+      "sources": [{ "id": 1001, "name": "Simulated Alpha" }],
+      "victim_id": 1001,
+      "victim_corporation_id": 5001,
+      "victim": "Simulated Alpha",
+      "ship": "Synthetic Cruiser",
+      "time": "2026-08-16T09:00:00Z"
+    },
+    {
+      "id": 9003,
+      "hash": "synthetic-hash-9003",
+      "sources": [{ "id": 1001, "name": "Simulated Alpha" }],
+      "victim_id": 3003,
+      "victim_corporation_id": 5001,
+      "victim": "Corporation Protected Example",
+      "ship": "Synthetic Destroyer",
+      "time": "2026-08-16T08:00:00Z"
+    },
+    {
+      "id": 9004,
+      "hash": "synthetic-hash-9004",
+      "sources": [{ "id": 1001, "name": "Simulated Alpha" }],
+      "victim_id": 4001,
+      "victim_corporation_id": 6004,
+      "victim": "Protected Example",
+      "ship": "Synthetic Battlecruiser",
+      "time": "2026-08-16T07:00:00Z"
+    },
+    {
+      "id": 9005,
+      "hash": "synthetic-hash-9005",
+      "sources": [{ "id": 1001, "name": "Simulated Alpha" }],
+      "victim_id": 3005,
+      "victim_corporation_id": 6005,
+      "victim": "Already Reported Example",
+      "ship": "Synthetic Battleship",
+      "time": "2026-08-16T06:00:00Z"
+    },
+    {
+      "id": 9006,
+      "hash": "synthetic-hash-9006",
+      "sources": [
+        { "id": 1001, "name": "Simulated Alpha" },
+        { "id": 1002, "name": "Simulated Beta" }
+      ],
+      "victim_id": 3006,
+      "victim_corporation_id": 6006,
+      "victim": "Shared Source Example",
+      "ship": "Synthetic Hauler",
+      "time": "2026-08-16T05:00:00Z"
+    }
+  ],
+  "resolved_characters": [
+    { "id": 4002, "name": "Lookup Character" }
+  ],
+  "resolved_corporations": [
+    { "id": 7001, "name": "Lookup Corporation" }
+  ],
+  "reported_kills": { "1001": [9005] },
+  "reported_losses": {},
+  "post_results": {
+    "9001": { "result": "new" },
+    "9002": { "result": "new" },
+    "9003": { "result": "error", "message": "simulated zKillboard rejection" },
+    "9004": { "result": "existing" },
+    "9006": { "result": "existing" }
+  }
+}

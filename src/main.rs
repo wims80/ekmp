@@ -1,11 +1,8 @@
 mod app;
-mod auth;
-mod esi;
+mod integrations;
 mod killmail;
 mod models;
-mod secrets;
-mod storage;
-mod zkill;
+mod persistence;
 
 fn app_icon() -> eframe::Result<eframe::egui::IconData> {
     eframe::icon_data::from_png_bytes(include_bytes!("../assets/app-icon.png"))

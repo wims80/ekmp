@@ -6,7 +6,7 @@ mod worker;
 use crate::{
     killmail::{remove_killmails_without_authenticated_sources, remove_reported_killmails},
     models::{Character, Killmail, ProtectedVictimKind, Store, ZKILL_STATUS_CACHE_VERSION},
-    storage,
+    persistence::storage,
 };
 use std::{collections::VecDeque, sync::mpsc::Receiver};
 use worker::WorkerEvent;

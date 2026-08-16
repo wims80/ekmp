@@ -1,8 +1,8 @@
 use crate::{
-    auth, esi,
+    integrations::{auth, esi, zkill},
     killmail::{report_state, ReportState},
     models::{Character, Killmail, ProtectedVictim, ProtectedVictimKind, Store},
-    zkill,
+    persistence::secrets,
 };
 use std::{
     collections::HashSet,
@@ -102,7 +102,7 @@ pub(super) fn remove_character(character: Character, tx: Sender<WorkerEvent>) {
     let credential_error = if character.uses_json_refresh_token_fallback() {
         None
     } else {
-        crate::secrets::delete_refresh_token(character.id).err()
+        secrets::delete_refresh_token(character.id).err()
     };
     let _ = tx.send(WorkerEvent::CharacterRemoved {
         id: character.id,
@@ -116,7 +116,7 @@ fn save_refresh_token_or_keep_fallback(character: &mut Character, tx: &Sender<Wo
     let Some(token) = character.refresh_token.as_deref() else {
         return;
     };
-    let result = crate::secrets::save_refresh_token(character.id, token);
+    let result = secrets::save_refresh_token(character.id, token);
     save_refresh_token_or_keep_fallback_with(character, result, tx);
 }
 

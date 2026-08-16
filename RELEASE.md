@@ -1,8 +1,7 @@
 # Release runbook
 
-This runbook covers the friends-only `v0.1.0` pre-release of EVE Killmail
-Publisher. It ships x86-64 Linux (glibc 2.35+) and x86-64 Windows builds. Do
-not create macOS or Linux ARM64 artifacts for this release line.
+This runbook covers the `v0.1.0` pre-release of EVE Killmail Publisher. 
+It ships x86-64 Linux (glibc 2.35+) and x86-64 Windows builds.
 
 ## One-time GitHub setup
 

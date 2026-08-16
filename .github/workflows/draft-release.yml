@@ -90,4 +90,4 @@ jobs:
         run: |
           cd release-assets
           sha256sum * > SHA256SUMS
-          gh release create "$GITHUB_REF_NAME" --draft --prerelease --generate-notes ekmp-* SHA256SUMS
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft --prerelease --generate-notes ekmp-* SHA256SUMS

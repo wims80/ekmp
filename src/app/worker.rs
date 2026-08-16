@@ -306,15 +306,21 @@ pub(super) fn load_killmails_and_statuses(
         return;
     }
 
-    let killmails = match backend.load_killmails(&store.characters) {
-        Ok(killmails) => killmails,
-        Err(error) => {
-            let _ = tx.send(WorkerEvent::Failed(format!(
-                "Could not load recent killmails: {error}"
-            )));
-            return;
-        }
-    };
+    let reported_ids = store
+        .zkill_cache
+        .iter()
+        .filter_map(|(id, entry)| entry.reported.then_some(*id))
+        .collect::<HashSet<_>>();
+    let killmails =
+        match backend.load_killmails(&store.characters, &store.cached_killmails, &reported_ids) {
+            Ok(killmails) => killmails,
+            Err(error) => {
+                let _ = tx.send(WorkerEvent::Failed(format!(
+                    "Could not load recent killmails: {error}"
+                )));
+                return;
+            }
+        };
     if tx
         .send(WorkerEvent::KillmailsLoaded(killmails.clone()))
         .is_err()
@@ -516,6 +522,7 @@ mod tests {
             ship: "Ship".into(),
             time: "Time".into(),
             estimated_value_isk: None,
+            detail: None,
         }
     }
 

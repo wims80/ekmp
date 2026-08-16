@@ -130,6 +130,7 @@ mod tests {
             ship: "Ship".into(),
             time: "2026-08-16T10:00:00Z".into(),
             estimated_value_isk: None,
+            detail: None,
         }
     }
 

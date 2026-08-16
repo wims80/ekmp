@@ -234,6 +234,7 @@ mod tests {
             ship: "Ship".into(),
             time: "Time".into(),
             estimated_value_isk: None,
+            detail: None,
         }
     }
 

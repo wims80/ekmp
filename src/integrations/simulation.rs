@@ -191,7 +191,12 @@ impl Backend for SimulatorBackend {
         Ok(())
     }
 
-    fn load_killmails(&self, _characters: &[Character]) -> Result<Vec<Killmail>, String> {
+    fn load_killmails(
+        &self,
+        _characters: &[Character],
+        _cached_killmails: &[Killmail],
+        _reported_ids: &HashSet<u64>,
+    ) -> Result<Vec<Killmail>, String> {
         match &self.load_error {
             Some(error) => Err(error.clone()),
             None => Ok(self.killmails.clone()),

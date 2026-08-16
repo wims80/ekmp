@@ -10,7 +10,8 @@ and explicitly submitting selected killmails to zKillboard.
 - Locally cached EVE portraits, organization logos, ship renders, and item icons
 - Removal of authenticated characters, their stored refresh tokens, and their
   unshared cached killmails
-- Recent killmail retrieval from ESI
+- Automatic recent killmail refresh from ESI at application startup, with
+  manual refresh available afterward
 - Cached zKillboard reporting status for each eligible killmail, refreshed from
   the relevant paginated zKillboard feed for unknown entries at startup
 - Session-only results for explicitly submitted killmails, with zKillboard links
@@ -76,8 +77,9 @@ The release already contains the EVE client ID and the required loopback
 callback registration. Users do not need to create an EVE developer
 application and must never enter, request, or share a client secret.
 
-After starting the application, authenticate one or more characters, load
-recent killmails, and use an individual post button when desired.
+After starting the application, authenticate one or more characters and use an
+individual post button when desired. On later starts, recent killmails refresh
+automatically after cached zKillboard statuses are checked.
 An in-progress character connection can be cancelled from the application and
 times out after five minutes if the browser authorization is abandoned.
 

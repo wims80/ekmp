@@ -21,6 +21,7 @@ impl App {
             .filter(|mail| report_state(&self.store, mail.id, now) == ReportState::Unknown)
             .count();
         if unknown_count == 0 || self.store.characters.is_empty() {
+            self.refresh_killmails_on_startup();
             return;
         }
 
@@ -97,6 +98,12 @@ impl App {
         self.start_operation(Operation::Load, "Loading recent killmails...", move |tx| {
             worker::load_killmails_and_statuses(backend, store, tx);
         });
+    }
+
+    pub(super) fn refresh_killmails_on_startup(&mut self) {
+        if !self.store.characters.is_empty() {
+            self.refresh_killmails();
+        }
     }
 
     pub(super) fn request_bulk_post(&mut self) {

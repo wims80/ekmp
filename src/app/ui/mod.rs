@@ -572,11 +572,10 @@ mod tests {
     }
 
     #[test]
-    fn simulator_ui_refreshes_and_posts_only_after_a_button_click() {
+    fn simulator_ui_refreshes_on_startup_and_posts_only_after_a_button_click() {
         let (mut harness, backend) = mixed_harness();
 
         assert!(backend.posted_ids().is_empty());
-        harness.get_by_label("Refresh killmails").click_accesskit();
         harness.run_steps(4);
 
         assert!(harness.query_by_label("Eligible Example").is_some());
@@ -618,7 +617,6 @@ mod tests {
     #[test]
     fn bulk_confirmation_revalidates_protection_in_the_ui_workflow() {
         let (mut harness, backend) = mixed_harness();
-        harness.get_by_label("Refresh killmails").click_accesskit();
         harness.run_steps(4);
         harness.get_by_label("Post eligible (2)").click_accesskit();
         harness.run_steps(2);

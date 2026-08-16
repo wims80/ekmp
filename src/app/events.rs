@@ -223,7 +223,8 @@ impl App {
             Some(Operation::MigrateRefreshTokens) => self.check_cached_statuses_on_startup(),
             Some(Operation::RemoveCharacter) => {}
             Some(Operation::AddProtectedVictim) => {}
-            Some(Operation::CheckCachedStatuses) | Some(Operation::Load) => {}
+            Some(Operation::CheckCachedStatuses) => self.refresh_killmails_on_startup(),
+            Some(Operation::Load) => {}
             Some(Operation::Post(mode)) => {
                 let label = match mode {
                     SubmissionMode::Bulk => "Bulk submission",

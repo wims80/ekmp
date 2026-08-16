@@ -1,8 +1,23 @@
 use super::{
-    IdentityImageState, ProtectedVictimKind, ProtectionReason, ACCENT, BORDER, MUTED, SUCCESS,
-    SURFACE, SURFACE_RAISED,
+    theme::{ACCENT, BORDER, MUTED, SUCCESS, SURFACE, SURFACE_RAISED},
+    IdentityImageState, ProtectedVictimKind,
 };
+use crate::killmail::ProtectionReason;
 use eframe::egui;
+
+pub(super) fn accessible_button(
+    ui: &mut egui::Ui,
+    enabled: bool,
+    button: egui::Button<'_>,
+    accessible_label: impl Into<String>,
+) -> egui::Response {
+    let accessible_label = accessible_label.into();
+    let response = ui.add_enabled(enabled, button);
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, accessible_label.clone())
+    });
+    response
+}
 
 pub(super) fn protected_victim_row(
     ui: &mut egui::Ui,
@@ -23,14 +38,12 @@ pub(super) fn protected_victim_row(
             );
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let response = ui.add_enabled(enabled, egui::Button::new("Remove").small());
-            response.widget_info(|| {
-                egui::WidgetInfo::labeled(
-                    egui::WidgetType::Button,
-                    enabled,
-                    format!("Remove protected {kind_label} {name} {id}"),
-                )
-            });
+            let response = accessible_button(
+                ui,
+                enabled,
+                egui::Button::new("Remove").small(),
+                format!("Remove protected {kind_label} {name} {id}"),
+            );
             if response.clicked() {
                 *remove = Some((kind, id));
             }

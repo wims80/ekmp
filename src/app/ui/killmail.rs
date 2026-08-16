@@ -1,7 +1,9 @@
 use super::{
-    chip, identity_image, protection_reason_label, IdentityImageKey, IdentityImageState, Killmail,
-    KillmailAttacker, KillmailItem, ReportState, ACCENT, ACCENT_DARK, BORDER, DANGER, MUTED,
-    SUCCESS, SURFACE, SURFACE_RAISED, WARNING,
+    accessible_button, chip, identity_image, protection_reason_label,
+    theme::{
+        ACCENT, ACCENT_DARK, BORDER, DANGER, MUTED, SUCCESS, SURFACE, SURFACE_RAISED, WARNING,
+    },
+    IdentityImageKey, IdentityImageState, Killmail, KillmailAttacker, KillmailItem, ReportState,
 };
 use crate::killmail::{protected_victim_reasons, report_state};
 use eframe::egui;
@@ -103,18 +105,17 @@ pub(super) fn killmail_card(
                         } else {
                             "Post to zKillboard"
                         };
-                        let response = ui.add_enabled(!context.busy, egui::Button::new(label));
-                        response.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
-                                !context.busy,
-                                if protected {
-                                    format!("Post protected killmail {} anyway", mail.id)
-                                } else {
-                                    format!("Post killmail {}", mail.id)
-                                },
-                            )
-                        });
+                        let accessible_label = if protected {
+                            format!("Post protected killmail {} anyway", mail.id)
+                        } else {
+                            format!("Post killmail {}", mail.id)
+                        };
+                        let response = accessible_button(
+                            ui,
+                            !context.busy,
+                            egui::Button::new(label),
+                            accessible_label,
+                        );
                         if response.clicked() {
                             *post_mail = Some(mail.clone());
                         }

@@ -122,6 +122,9 @@ impl App {
             } => self.log(format!(
                 "Could not check zKillboard status for {character_name}: {error}"
             )),
+            super::WorkerEvent::LookupIncomplete { character_name } => self.log(format!(
+                "Could not confirm zKillboard status for {character_name} within the three-page lookup limit"
+            )),
             super::WorkerEvent::PostComplete {
                 killmail_id,
                 result,

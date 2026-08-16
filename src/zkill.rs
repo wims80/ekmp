@@ -2,9 +2,9 @@ use crate::models::Killmail;
 use reqwest::blocking::Client;
 use reqwest::header::{ACCEPT_ENCODING, USER_AGENT};
 use serde::Deserialize;
-use std::collections::HashSet;
 
 const API: &str = "https://zkillboard.com/api";
+pub const KILLMAILS_PER_PAGE: usize = 200;
 const USER_AGENT_VALUE: &str = concat!(
     "ekmp/",
     env!("CARGO_PKG_VERSION"),
@@ -17,23 +17,31 @@ pub struct PostOutcome {
     pub url: String,
 }
 
-pub fn character_kill_ids(character_id: u64) -> Result<HashSet<u64>, String> {
-    character_mail_ids(character_id, "kills")
+pub fn character_killmail_page(character_id: u64, page: usize) -> Result<Vec<KillEntry>, String> {
+    character_mail_page(character_id, "kills", page)
 }
 
-pub fn character_loss_ids(character_id: u64) -> Result<HashSet<u64>, String> {
-    character_mail_ids(character_id, "losses")
+pub fn character_loss_killmail_page(
+    character_id: u64,
+    page: usize,
+) -> Result<Vec<KillEntry>, String> {
+    character_mail_page(character_id, "losses", page)
 }
 
-fn character_mail_ids(character_id: u64, mail_type: &str) -> Result<HashSet<u64>, String> {
+fn character_mail_page(
+    character_id: u64,
+    mail_type: &str,
+    page: usize,
+) -> Result<Vec<KillEntry>, String> {
     let response = Client::new()
-        .get(format!("{API}/{mail_type}/characterID/{character_id}/"))
+        .get(format!(
+            "{API}/{mail_type}/characterID/{character_id}/page/{page}/"
+        ))
         .header(USER_AGENT, USER_AGENT_VALUE)
         .header(ACCEPT_ENCODING, "gzip")
         .send()
         .map_err(|e| format!("zKillboard lookup failed: {e}"))?;
-    let entries: Vec<KillEntry> = decode_response(response, "zKillboard lookup")?;
-    Ok(entries.into_iter().map(|entry| entry.killmail_id).collect())
+    decode_response(response, "zKillboard lookup")
 }
 
 pub fn post(mail: &Killmail) -> Result<PostOutcome, String> {
@@ -76,9 +84,10 @@ fn decode_body<T: for<'de> Deserialize<'de>>(
         .map_err(|e| format!("{operation} returned invalid JSON ({e}): {body}"))
 }
 
-#[derive(Deserialize)]
-struct KillEntry {
-    killmail_id: u64,
+#[derive(Clone, Debug, Deserialize)]
+pub struct KillEntry {
+    pub killmail_id: u64,
+    pub killmail_time: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,7 +141,7 @@ mod tests {
     fn parses_lightweight_killmail_lookup_results() {
         let entries: Vec<KillEntry> = decode_body(
             200,
-            r#"[{"killmail_id":42,"zkb":{"hash":"ignored"}},{"killmail_id":43}]"#,
+            r#"[{"killmail_id":42,"killmail_time":"2026-01-01T00:00:00Z","zkb":{"hash":"ignored"}},{"killmail_id":43,"killmail_time":"2026-01-02T00:00:00Z"}]"#,
             "lookup",
         )
         .unwrap();

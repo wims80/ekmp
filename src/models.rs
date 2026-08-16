@@ -1,11 +1,15 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub const ZKILL_STATUS_CACHE_VERSION: u8 = 2;
+
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Store {
     pub characters: Vec<Character>,
     #[serde(default)]
     pub zkill_cache: HashMap<u64, ZkillCacheEntry>,
+    #[serde(default)]
+    pub zkill_status_cache_version: u8,
     #[serde(default)]
     pub show_protected_killmails: bool,
     #[serde(default)]
@@ -90,6 +94,7 @@ mod tests {
 
         assert_eq!(store.characters.len(), 1);
         assert!(store.zkill_cache.is_empty());
+        assert_eq!(store.zkill_status_cache_version, 0);
         assert!(!store.show_protected_killmails);
         assert!(store.cached_killmails.is_empty());
         assert!(store.manually_protected_characters.is_empty());
@@ -165,6 +170,7 @@ mod tests {
         assert_eq!(restored.cached_killmails[0].id, 7);
         assert_eq!(restored.manually_protected_characters[0].id, 8);
         assert_eq!(restored.manually_protected_corporations[0].id, 9);
+        assert_eq!(restored.zkill_status_cache_version, 0);
     }
 
     #[test]

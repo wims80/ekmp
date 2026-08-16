@@ -459,9 +459,17 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_worker();
-        egui::CentralPanel::default().show(ctx, |ui| {
+
+        if self.is_busy() {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        egui::CentralPanel::default().show(ui, |ui| {
             self.show_header(ui);
             ui.separator();
             self.show_authenticated_characters(ui);
@@ -472,12 +480,8 @@ impl eframe::App for App {
             ui.separator();
             self.show_recent_killmails(ui);
         });
-        self.show_bulk_confirmation(ctx);
-        self.show_character_removal_confirmation(ctx);
-
-        if self.is_busy() {
-            ctx.request_repaint_after(Duration::from_millis(100));
-        }
+        self.show_bulk_confirmation(&ctx);
+        self.show_character_removal_confirmation(&ctx);
     }
 }
 

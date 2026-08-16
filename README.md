@@ -7,20 +7,24 @@ and explicitly submitting selected killmails to zKillboard.
 
 - EVE SSO PKCE authentication with the `esi-killmails.read_killmails.v1` scope
 - Multiple authenticated characters
-- Locally cached EVE character portraits and corporation logos
+- Locally cached EVE portraits, organization logos, ship renders, and item icons
 - Removal of authenticated characters, their stored refresh tokens, and their
   unshared cached killmails
-- Recent killmail retrieval from ESI
+- Automatic recent killmail refresh from ESI at application startup, with
+  manual refresh available afterward
 - Cached zKillboard reporting status for each eligible killmail, refreshed from
   the relevant paginated zKillboard feed for unknown entries at startup
 - Session-only results for explicitly submitted killmails, with zKillboard links
 - Configurable protected victim characters and corporations excluded from bulk posting
 - A posting summary showing bulk-eligible, protected, and still-unchecked killmails
 - A separate `Post to zKillboard` button for each killmail still confirmed as
-  unreported
+  unreported, revealed by expanding its compact killmail card
 - Confirmed bulk submission of all unreported killmails
 - A review-focused dashboard with connected characters and protection controls
-  beside a status summary and readable killmail cards
+  beside a status summary and compact killmail cards with estimated ISK values
+- Rich expanded killmail cards with victim and location context, independently
+  scrollable aggressor and fitting/content panes, final-blow and top-damage
+  identification, item quantities, and dropped/destroyed outcomes
 - An expanded activity log that identifies characters, killmail IDs, source
   counts, and zKillboard status-check outcomes
 
@@ -73,8 +77,9 @@ The release already contains the EVE client ID and the required loopback
 callback registration. Users do not need to create an EVE developer
 application and must never enter, request, or share a client secret.
 
-After starting the application, authenticate one or more characters, load
-recent killmails, and use an individual post button when desired.
+After starting the application, authenticate one or more characters and use an
+individual post button when desired. On later starts, recent killmails refresh
+automatically after cached zKillboard statuses are checked.
 An in-progress character connection can be cancelled from the application and
 times out after five minutes if the browser authorization is abandoned.
 
@@ -84,12 +89,25 @@ local snapshot of the most recently loaded killmails, and their zKillboard
 status cache. The snapshot is displayed immediately on the next startup. Full
 killmail records already reported to zKillboard are removed from the snapshot;
 only their compact status-cache entries are retained. Unreported results are
-checked again after 15 minutes.
+checked again after 15 minutes. Matching unreported killmail snapshots are
+reused during refresh so their full ESI detail is not downloaded repeatedly.
 
-Character portraits and corporation logos are cached separately in
+Character portraits, corporation and alliance logos, ship renders, and item
+icons from the EVE image service are loaded when needed and cached separately in
 `~/.cache/ekmp/images` on Linux (or `$XDG_CACHE_HOME/ekmp/images` when set) and
 `%LOCALAPPDATA%\ekmp\images` on Windows. Cached images are refreshed after seven
 days, with stale images retained as an offline fallback.
+
+Cacheable ESI GET responses are stored separately in a bounded SQLite cache:
+`~/.cache/ekmp/esi-cache.sqlite3` on Linux (or
+`$XDG_CACHE_HOME/ekmp/esi-cache.sqlite3`) and
+`%LOCALAPPDATA%\ekmp\esi-cache.sqlite3` on Windows. The cache follows ESI's
+`Expires` and `ETag` headers, revalidating expired data conditionally. Full
+killmail-detail responses are deliberately excluded so reported killmail
+records are never retained there. Entity/type names are deduplicated and
+resolved in bulk during refresh; system, constellation, region, and market-price
+lookups use the HTTP cache. Displayed ISK totals use ESI average prices with
+adjusted prices as a fallback and are estimates rather than live market quotes.
 
 Configuration updates are written through a temporary file before replacing
 the previous file. On Unix, the file is restricted to the current user. If the
@@ -140,7 +158,8 @@ cargo run --features dev-tools -- --scenario mixed
 cargo run --features dev-tools -- --scenario errors
 ```
 
-The `mixed` scenario covers eligible, protected, already reported, and shared-source killmails. The
+The `mixed` scenario covers eligible, protected, already reported, and shared-source killmails, plus
+a detailed fitting, nested cargo, player attackers, and an NPC attacker for expanded-card testing. The
 `errors` scenario contains a confirmed-unreported killmail whose simulated submission fails. Each
 run starts from its fixture and keeps changes in memory. To debug persistence separately, provide an
 explicit development-only state file:

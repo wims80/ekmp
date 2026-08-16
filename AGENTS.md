@@ -40,8 +40,11 @@
   and persistence coordination.
 - `src/app/operations.rs` owns operation startup and submission revalidation.
 - `src/app/events.rs` owns worker-event handling and operation completion.
-- `src/app/ui.rs` owns egui rendering and user interactions, decomposed into
-  section-level rendering methods.
+- `src/app/ui/` owns egui rendering and user interactions: `mod.rs` owns the
+  app frame and dispatches component actions, `theme.rs` owns shared visual
+  styling, `components.rs` owns shared widgets, `dialogs.rs` owns confirmation
+  dialogs, `sidebar.rs` owns sidebar rendering, and `killmail.rs` owns
+  killmail-card and detail rendering.
 - `src/app/worker.rs` owns blocking background work and worker events.
 - `src/killmail.rs` owns killmail visibility, reporting status, protection,
   and submission policy.
@@ -49,6 +52,10 @@
   ESI data access, EVE image-service portraits and logos, and zKillboard lookup
   and submission. Its single backend interface separates the live adapters from
   the feature-gated offline simulator used by workers and UI tests.
+- `src/integrations/esi/` owns the ESI adapter: `client.rs` centralizes cached
+  HTTP behavior, `killmails.rs` assembles killmails, `universe.rs` resolves
+  EVE identities, `market.rs` estimates values, and `types.rs` contains
+  private response DTOs.
 - `dev/scenarios/` owns synthetic JSON scenarios for offline development. The
   `dev-tools` feature enables scenario launch and eframe inspection for agent
   control; live runs must never expose the inspection interface.
@@ -62,6 +69,8 @@
   of unreadable state.
 - `src/persistence/image_cache.rs` owns the local cache for public EVE character
   portraits and corporation logos.
+- `src/persistence/esi_cache.rs` owns the local SQLite cache for cacheable ESI
+  GET responses, including expiry and conditional-request metadata.
 - `packaging/linux/` owns files installed by the Linux release archive;
   `scripts/package-linux.sh` and `scripts/package-windows.ps1` assemble the
   platform release archives.

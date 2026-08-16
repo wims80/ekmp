@@ -15,7 +15,7 @@ use eframe::egui;
 #[cfg(any(test, feature = "dev-tools"))]
 use std::path::PathBuf;
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{
         atomic::AtomicBool,
         mpsc::{Receiver, Sender},
@@ -86,6 +86,7 @@ pub struct App {
     new_protected_victim_query: String,
     new_protected_victim_kind: ProtectedVictimKind,
     session_reports: Vec<SessionReport>,
+    expanded_killmail_ids: HashSet<u64>,
     persistence_blocked: Option<String>,
     identity_image_requests: Sender<IdentityImageKey>,
     identity_image_events: Receiver<IdentityImageEvent>,
@@ -171,6 +172,7 @@ impl App {
             new_protected_victim_query: String::new(),
             new_protected_victim_kind: ProtectedVictimKind::Character,
             session_reports: Vec::new(),
+            expanded_killmail_ids: HashSet::new(),
             persistence_blocked,
             identity_image_requests,
             identity_image_events,
@@ -230,7 +232,7 @@ impl App {
             };
         }
         if self.persistence_blocked.is_some() {
-            return "Local state unavailable · See warning".into();
+            return "Local state unavailable - See warning".into();
         }
 
         let latest_status = self.latest_status.to_ascii_lowercase();
@@ -238,7 +240,7 @@ impl App {
             || latest_status.contains("could not")
             || latest_status.contains("unavailable")
         {
-            return "Action needed · See activity log".into();
+            return "Action needed - See activity log".into();
         }
         if self.store.characters.is_empty() {
             return "Connect a character to begin".into();
@@ -256,11 +258,11 @@ impl App {
             format!("Checking {} killmail statuses", summary.awaiting_status)
         } else if summary.eligible_for_bulk_posting > 0 {
             format!(
-                "Ready · {} eligible for posting",
+                "Ready - {} eligible for posting",
                 summary.eligible_for_bulk_posting
             )
         } else if summary.protected > 0 {
-            format!("Review queue · {} protected", summary.protected)
+            format!("Review queue - {} protected", summary.protected)
         } else {
             "Review queue is up to date".into()
         }

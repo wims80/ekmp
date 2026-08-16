@@ -3,12 +3,17 @@ use crate::{
     models::{Character, Killmail, ProtectedVictim, ProtectedVictimKind},
     persistence::secrets,
 };
-use std::{sync::atomic::AtomicBool, time::Duration};
+use std::{collections::HashSet, sync::atomic::AtomicBool, time::Duration};
 
 pub(crate) trait Backend: Send + Sync {
     fn authenticate(&self, cancelled: &AtomicBool) -> Result<Character, String>;
     fn refresh_character_affiliation(&self, character: &mut Character) -> Result<(), String>;
-    fn load_killmails(&self, characters: &[Character]) -> Result<Vec<Killmail>, String>;
+    fn load_killmails(
+        &self,
+        characters: &[Character],
+        cached_killmails: &[Killmail],
+        reported_ids: &HashSet<u64>,
+    ) -> Result<Vec<Killmail>, String>;
     fn resolve_protected_victim(
         &self,
         kind: ProtectedVictimKind,
@@ -45,8 +50,13 @@ impl Backend for LiveBackend {
         esi::refresh_character_affiliation(character)
     }
 
-    fn load_killmails(&self, characters: &[Character]) -> Result<Vec<Killmail>, String> {
-        esi::load_killmails(characters)
+    fn load_killmails(
+        &self,
+        characters: &[Character],
+        cached_killmails: &[Killmail],
+        reported_ids: &HashSet<u64>,
+    ) -> Result<Vec<Killmail>, String> {
+        esi::load_killmails(characters, cached_killmails, reported_ids)
     }
 
     fn resolve_protected_victim(

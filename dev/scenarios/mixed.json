@@ -32,7 +32,57 @@
       "victim_corporation_id": 6001,
       "victim": "Eligible Example",
       "ship": "Synthetic Frigate",
-      "time": "2026-08-16T10:00:00Z"
+      "time": "2026-08-16T10:00:00Z",
+      "estimated_value_isk": 2850000,
+      "detail": {
+        "victim": {
+          "corporation_name": "Example Logistics",
+          "alliance_id": 8001,
+          "alliance_name": "Example Coalition",
+          "ship_type_id": 587,
+          "damage_taken": 18420,
+          "items": [
+            { "item_type_id": 519, "name": "Gyrostabilizer II", "flag": 11, "quantity_destroyed": 1, "quantity_dropped": 0, "singleton": 0 },
+            { "item_type_id": 4405, "name": "1MN Microwarpdrive II", "flag": 19, "quantity_destroyed": 0, "quantity_dropped": 1, "singleton": 0 },
+            { "item_type_id": 2881, "name": "150mm Light AutoCannon II", "flag": 27, "quantity_destroyed": 2, "quantity_dropped": 1, "singleton": 0 },
+            { "item_type_id": 31716, "name": "Small Projectile Burst Aerator I", "flag": 92, "quantity_destroyed": 1, "quantity_dropped": 0, "singleton": 0 },
+            { "item_type_id": 12608, "name": "Hail S", "flag": 5, "quantity_destroyed": 1200, "quantity_dropped": 800, "singleton": 0,
+              "items": [{ "item_type_id": 34, "name": "Tritanium", "flag": 5, "quantity_destroyed": 10, "quantity_dropped": 0, "singleton": 0 }] },
+            { "item_type_id": 2454, "name": "Hobgoblin II", "flag": 87, "quantity_destroyed": 2, "quantity_dropped": 1, "singleton": 0 },
+            { "item_type_id": 12345, "name": "Unknown Hold Example", "flag": 222, "quantity_destroyed": 1, "quantity_dropped": 0, "singleton": 0 }
+          ]
+        },
+        "attackers": [
+          {
+            "character_id": 7001, "character_name": "Final Blow Example",
+            "corporation_id": 7101, "corporation_name": "Example Attackers",
+            "alliance_id": 7201, "alliance_name": "Example Alliance",
+            "ship_type_id": 17703, "ship_name": "Imperial Navy Slicer",
+            "weapon_type_id": 3025, "weapon_name": "Small Focused Pulse Laser II",
+            "damage_done": 6420, "final_blow": true, "security_status": -1.2
+          },
+          {
+            "character_id": 7002, "character_name": "Top Damage Example",
+            "corporation_id": 7102, "corporation_name": "Damage Incorporated",
+            "ship_type_id": 17922, "ship_name": "Ashimmu",
+            "weapon_type_id": 3082, "weapon_name": "Medium Beam Laser II",
+            "damage_done": 9300, "final_blow": false, "security_status": 0.4
+          },
+          {
+            "corporation_id": 1000125, "corporation_name": "Serpentis Corporation",
+            "faction_id": 500020, "faction_name": "Serpentis",
+            "ship_type_id": 17998, "ship_name": "Coreli Guardian Safeguard",
+            "weapon_type_id": 2048, "weapon_name": "Damage Cloud",
+            "damage_done": 2700, "final_blow": false
+          }
+        ],
+        "location": {
+          "solar_system_id": 30000142,
+          "solar_system_name": "Jita",
+          "region_id": 10000002,
+          "region_name": "The Forge"
+        }
+      }
     },
     {
       "id": 9002,
@@ -42,7 +92,8 @@
       "victim_corporation_id": 5001,
       "victim": "Simulated Alpha",
       "ship": "Synthetic Cruiser",
-      "time": "2026-08-16T09:00:00Z"
+      "time": "2026-08-16T09:00:00Z",
+      "estimated_value_isk": 12600000
     },
     {
       "id": 9003,
@@ -52,7 +103,8 @@
       "victim_corporation_id": 5001,
       "victim": "Corporation Protected Example",
       "ship": "Synthetic Destroyer",
-      "time": "2026-08-16T08:00:00Z"
+      "time": "2026-08-16T08:00:00Z",
+      "estimated_value_isk": 4900000
     },
     {
       "id": 9004,
@@ -62,7 +114,8 @@
       "victim_corporation_id": 6004,
       "victim": "Protected Example",
       "ship": "Synthetic Battlecruiser",
-      "time": "2026-08-16T07:00:00Z"
+      "time": "2026-08-16T07:00:00Z",
+      "estimated_value_isk": 78400000
     },
     {
       "id": 9005,
@@ -72,7 +125,8 @@
       "victim_corporation_id": 6005,
       "victim": "Already Reported Example",
       "ship": "Synthetic Battleship",
-      "time": "2026-08-16T06:00:00Z"
+      "time": "2026-08-16T06:00:00Z",
+      "estimated_value_isk": 312600000
     },
     {
       "id": 9006,
@@ -85,7 +139,8 @@
       "victim_corporation_id": 6006,
       "victim": "Shared Source Example",
       "ship": "Synthetic Hauler",
-      "time": "2026-08-16T05:00:00Z"
+      "time": "2026-08-16T05:00:00Z",
+      "estimated_value_isk": 16100000
     }
   ],
   "resolved_characters": [

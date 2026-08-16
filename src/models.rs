@@ -73,6 +73,90 @@ pub struct Killmail {
     pub victim: String,
     pub ship: String,
     pub time: String,
+    #[serde(default)]
+    pub estimated_value_isk: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<KillmailDetail>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KillmailDetail {
+    pub victim: KillmailVictimDetail,
+    #[serde(default)]
+    pub attackers: Vec<KillmailAttacker>,
+    pub location: KillmailLocation,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KillmailVictimDetail {
+    #[serde(default)]
+    pub corporation_name: Option<String>,
+    #[serde(default)]
+    pub alliance_id: Option<u64>,
+    #[serde(default)]
+    pub alliance_name: Option<String>,
+    #[serde(default)]
+    pub ship_type_id: Option<u64>,
+    pub damage_taken: u64,
+    #[serde(default)]
+    pub items: Vec<KillmailItem>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KillmailAttacker {
+    #[serde(default)]
+    pub character_id: Option<u64>,
+    #[serde(default)]
+    pub character_name: Option<String>,
+    #[serde(default)]
+    pub corporation_id: Option<u64>,
+    #[serde(default)]
+    pub corporation_name: Option<String>,
+    #[serde(default)]
+    pub alliance_id: Option<u64>,
+    #[serde(default)]
+    pub alliance_name: Option<String>,
+    #[serde(default)]
+    pub faction_id: Option<u64>,
+    #[serde(default)]
+    pub faction_name: Option<String>,
+    #[serde(default)]
+    pub ship_type_id: Option<u64>,
+    #[serde(default)]
+    pub ship_name: Option<String>,
+    #[serde(default)]
+    pub weapon_type_id: Option<u64>,
+    #[serde(default)]
+    pub weapon_name: Option<String>,
+    pub damage_done: u64,
+    pub final_blow: bool,
+    #[serde(default)]
+    pub security_status: Option<f32>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KillmailLocation {
+    pub solar_system_id: u64,
+    pub solar_system_name: String,
+    #[serde(default)]
+    pub region_id: Option<u64>,
+    #[serde(default)]
+    pub region_name: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct KillmailItem {
+    pub item_type_id: u64,
+    pub name: String,
+    pub flag: u32,
+    #[serde(default)]
+    pub quantity_destroyed: u64,
+    #[serde(default)]
+    pub quantity_dropped: u64,
+    #[serde(default)]
+    pub singleton: u32,
+    #[serde(default)]
+    pub items: Vec<KillmailItem>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,6 +224,8 @@ mod tests {
                 victim: "Victim".into(),
                 ship: "Ship".into(),
                 time: "Time".into(),
+                estimated_value_isk: Some(1_250_000.0),
+                detail: None,
             }],
             ..Store::default()
         };
@@ -168,6 +254,10 @@ mod tests {
         assert!(restored.show_protected_killmails);
         assert_eq!(restored.cached_killmails.len(), 1);
         assert_eq!(restored.cached_killmails[0].id, 7);
+        assert_eq!(
+            restored.cached_killmails[0].estimated_value_isk,
+            Some(1_250_000.0)
+        );
         assert_eq!(restored.manually_protected_characters[0].id, 8);
         assert_eq!(restored.manually_protected_corporations[0].id, 9);
         assert_eq!(restored.zkill_status_cache_version, 0);

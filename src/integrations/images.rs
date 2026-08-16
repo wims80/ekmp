@@ -11,6 +11,9 @@ const USER_AGENT_VALUE: &str = concat!(
 pub(crate) enum IdentityImageKey {
     Character(u64),
     Corporation(u64),
+    Alliance(u64),
+    TypeIcon(u64),
+    TypeRender(u64),
 }
 
 impl IdentityImageKey {
@@ -22,6 +25,9 @@ impl IdentityImageKey {
             Self::Corporation(id) => {
                 format!("{IMAGE_SERVICE}/corporations/{id}/logo?size=128")
             }
+            Self::Alliance(id) => format!("{IMAGE_SERVICE}/alliances/{id}/logo?size=128"),
+            Self::TypeIcon(id) => format!("{IMAGE_SERVICE}/types/{id}/icon?size=64"),
+            Self::TypeRender(id) => format!("{IMAGE_SERVICE}/types/{id}/render?size=256"),
         }
     }
 
@@ -29,6 +35,9 @@ impl IdentityImageKey {
         match self {
             Self::Character(id) => format!("character-portrait-{id}"),
             Self::Corporation(id) => format!("corporation-logo-{id}"),
+            Self::Alliance(id) => format!("alliance-logo-{id}"),
+            Self::TypeIcon(id) => format!("type-icon-{id}"),
+            Self::TypeRender(id) => format!("type-render-{id}"),
         }
     }
 
@@ -36,6 +45,9 @@ impl IdentityImageKey {
         match self {
             Self::Character(id) => format!("character-{id}.jpg"),
             Self::Corporation(id) => format!("corporation-{id}.png"),
+            Self::Alliance(id) => format!("alliance-{id}.png"),
+            Self::TypeIcon(id) => format!("type-icon-{id}.png"),
+            Self::TypeRender(id) => format!("type-render-{id}.png"),
         }
     }
 }
@@ -67,6 +79,18 @@ mod tests {
             IdentityImageKey::Corporation(84).url(),
             "https://images.evetech.net/corporations/84/logo?size=128"
         );
+        assert_eq!(
+            IdentityImageKey::Alliance(126).url(),
+            "https://images.evetech.net/alliances/126/logo?size=128"
+        );
+        assert_eq!(
+            IdentityImageKey::TypeIcon(587).url(),
+            "https://images.evetech.net/types/587/icon?size=64"
+        );
+        assert_eq!(
+            IdentityImageKey::TypeRender(587).url(),
+            "https://images.evetech.net/types/587/render?size=256"
+        );
     }
 
     #[test]
@@ -78,6 +102,10 @@ mod tests {
         assert_eq!(
             IdentityImageKey::Corporation(84).cache_file_name(),
             "corporation-84.png"
+        );
+        assert_eq!(
+            IdentityImageKey::TypeRender(587).cache_file_name(),
+            "type-render-587.png"
         );
     }
 }

@@ -33,16 +33,15 @@ pub(super) fn killmail_card(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                let arrow = if expanded { "v" } else { ">" };
                 let action = if expanded { "Collapse" } else { "Expand" };
-                let response = ui
-                    .add_sized(
-                        egui::vec2(22.0, 28.0),
-                        egui::Label::new(egui::RichText::new(arrow).size(20.0))
-                            .selectable(false)
-                            .sense(egui::Sense::click()),
-                    )
-                    .on_hover_text(format!("{action} killmail details"));
+                let (_rect, response) =
+                    ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+                egui::collapsing_header::paint_default_icon(
+                    ui,
+                    if expanded { 1.0 } else { 0.0 },
+                    &response,
+                );
+                let response = response.on_hover_text(format!("{action} killmail details"));
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
                         egui::WidgetType::Button,
@@ -236,29 +235,21 @@ fn expanded_killmail(
         ui.columns(2, |columns| {
             aggressor_pane(
                 &mut columns[0],
-                mail.id,
                 detail.victim.damage_taken,
                 &detail.attackers,
                 images,
             );
-            fitting_pane(&mut columns[1], mail.id, &detail.victim.items, images);
+            fitting_pane(&mut columns[1], &detail.victim.items, images);
         });
     } else {
-        aggressor_pane(
-            ui,
-            mail.id,
-            detail.victim.damage_taken,
-            &detail.attackers,
-            images,
-        );
+        aggressor_pane(ui, detail.victim.damage_taken, &detail.attackers, images);
         ui.add_space(8.0);
-        fitting_pane(ui, mail.id, &detail.victim.items, images);
+        fitting_pane(ui, &detail.victim.items, images);
     }
 }
 
 fn aggressor_pane(
     ui: &mut egui::Ui,
-    killmail_id: u64,
     damage_taken: u64,
     attackers: &[KillmailAttacker],
     images: &std::collections::HashMap<IdentityImageKey, IdentityImageState>,
@@ -272,19 +263,13 @@ fn aggressor_pane(
                 .small()
                 .color(MUTED),
         );
-        egui::ScrollArea::vertical()
-            .id_salt(("killmail_attackers", killmail_id))
-            .max_height(390.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                if ordered.is_empty() {
-                    ui.label(egui::RichText::new("No attacker data").color(MUTED));
-                }
-                for attacker in ordered {
-                    attacker_row(ui, attacker, damage_taken, top_damage, images);
-                    ui.separator();
-                }
-            });
+        if ordered.is_empty() {
+            ui.label(egui::RichText::new("No attacker data").color(MUTED));
+        }
+        for attacker in ordered {
+            attacker_row(ui, attacker, damage_taken, top_damage, images);
+            ui.separator();
+        }
     });
 }
 
@@ -390,58 +375,51 @@ fn attacker_row(
 
 fn fitting_pane(
     ui: &mut egui::Ui,
-    killmail_id: u64,
     items: &[KillmailItem],
     images: &std::collections::HashMap<IdentityImageKey, IdentityImageState>,
 ) {
     let rows = fitting_rows(items);
     detail_pane(ui, "FITTING AND CONTENT", |ui| {
-        egui::ScrollArea::vertical()
-            .id_salt(("killmail_fitting", killmail_id))
-            .max_height(414.0)
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                if rows.is_empty() {
-                    ui.label(egui::RichText::new("No fitting or cargo data").color(MUTED));
+        if rows.is_empty() {
+            ui.label(egui::RichText::new("No fitting or cargo data").color(MUTED));
+        }
+        let mut last_section = None;
+        for row in &rows {
+            if last_section != Some(row.section.as_str()) {
+                if last_section.is_some() {
+                    ui.add_space(4.0);
                 }
-                let mut last_section = None;
-                for row in &rows {
-                    if last_section != Some(row.section.as_str()) {
-                        if last_section.is_some() {
-                            ui.add_space(4.0);
+                ui.label(egui::RichText::new(&row.section).strong().color(ACCENT));
+                last_section = Some(row.section.as_str());
+            }
+            ui.horizontal(|ui| {
+                identity_image(
+                    ui,
+                    images.get(&IdentityImageKey::TypeIcon(row.item_type_id)),
+                    28.0,
+                    '?',
+                    "Fitting item",
+                );
+                ui.vertical(|ui| {
+                    ui.label(&row.name);
+                    let outcome = match (row.destroyed, row.dropped) {
+                        (0, dropped) => format!("Dropped {dropped}"),
+                        (destroyed, 0) => format!("Destroyed {destroyed}"),
+                        (destroyed, dropped) => {
+                            format!("Destroyed {destroyed} - Dropped {dropped}")
                         }
-                        ui.label(egui::RichText::new(&row.section).strong().color(ACCENT));
-                        last_section = Some(row.section.as_str());
-                    }
-                    ui.horizontal(|ui| {
-                        identity_image(
-                            ui,
-                            images.get(&IdentityImageKey::TypeIcon(row.item_type_id)),
-                            28.0,
-                            '?',
-                            "Fitting item",
-                        );
-                        ui.vertical(|ui| {
-                            ui.label(&row.name);
-                            let outcome = match (row.destroyed, row.dropped) {
-                                (0, dropped) => format!("Dropped {dropped}"),
-                                (destroyed, 0) => format!("Destroyed {destroyed}"),
-                                (destroyed, dropped) => {
-                                    format!("Destroyed {destroyed} - Dropped {dropped}")
-                                }
-                            };
-                            ui.label(
-                                egui::RichText::new(outcome)
-                                    .small()
-                                    .color(if row.dropped > 0 { SUCCESS } else { MUTED }),
-                            );
-                        });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.label(format_number(row.destroyed + row.dropped));
-                        });
-                    });
-                }
+                    };
+                    ui.label(
+                        egui::RichText::new(outcome)
+                            .small()
+                            .color(if row.dropped > 0 { SUCCESS } else { MUTED }),
+                    );
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(format_number(row.destroyed + row.dropped));
+                });
             });
+        }
     });
 }
 

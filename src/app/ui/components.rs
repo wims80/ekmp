@@ -4,31 +4,6 @@ use super::{
 };
 use eframe::egui;
 
-pub(super) fn metric_card(
-    ui: &mut egui::Ui,
-    value: usize,
-    label: &str,
-    description: &str,
-    color: egui::Color32,
-) {
-    egui::Frame::new()
-        .fill(SURFACE)
-        .stroke(egui::Stroke::new(1.0, BORDER))
-        .corner_radius(8)
-        .inner_margin(14)
-        .show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(
-                egui::RichText::new(value.to_string())
-                    .size(26.0)
-                    .strong()
-                    .color(color),
-            );
-            ui.label(egui::RichText::new(label).size(12.0).strong().color(color));
-            ui.label(egui::RichText::new(description).small().color(MUTED));
-        });
-}
-
 pub(super) fn protected_victim_row(
     ui: &mut egui::Ui,
     kind_label: &str,

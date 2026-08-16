@@ -58,6 +58,14 @@ impl App {
     fn show_top_bar(&mut self, ui: &mut egui::Ui) {
         let mut cancel_authentication = false;
         let pill_status = self.status_pill_text();
+        let simulation_notice = self.simulation_name.as_ref().map(|name| {
+            (
+                format!("SIMULATION - Offline scenario {name:?}"),
+                format!(
+                    "SIMULATION - Offline scenario {name:?}. No EVE, zKillboard, credential-store, or image-service requests can be made."
+                ),
+            )
+        });
         egui::Frame::new()
             .fill(SURFACE)
             .inner_margin(egui::Margin::symmetric(20, 16))
@@ -81,6 +89,26 @@ impl App {
                         if self.is_authenticating() && ui.button("Cancel connection").clicked() {
                             cancel_authentication = true;
                         }
+                        if let Some((label, message)) = &simulation_notice {
+                            let response = egui::Frame::new()
+                                .fill(ACCENT.gamma_multiply(0.14))
+                                .stroke(egui::Stroke::new(1.0, ACCENT.gamma_multiply(0.7)))
+                                .corner_radius(12)
+                                .inner_margin(egui::Margin::symmetric(10, 5))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new(label)
+                                            .size(13.0)
+                                            .strong()
+                                            .color(ACCENT),
+                                    );
+                                })
+                                .response;
+                            response.on_hover_ui(|ui| {
+                                ui.set_max_width(460.0);
+                                ui.label(egui::RichText::new(message).color(ACCENT));
+                            });
+                        }
                     });
                 });
             });
@@ -90,16 +118,6 @@ impl App {
     }
 
     fn show_warnings(&self, ui: &mut egui::Ui) {
-        if let Some(name) = &self.simulation_name {
-            notice(
-                ui,
-                ACCENT,
-                "SIMULATION",
-                &format!(
-                    "Offline scenario {name:?}. No EVE, zKillboard, credential-store, or image-service requests can be made."
-                ),
-            );
-        }
         if let Some(error) = &self.persistence_blocked {
             notice(
                 ui,
@@ -158,7 +176,19 @@ impl App {
                         .small()
                         .color(MUTED),
                 );
-                ui.add_space(6.0);
+                ui.add_space(8.0);
+                if ui
+                    .add_enabled(
+                        self.persisted_controls_enabled(),
+                        egui::Button::new("+  Connect another character")
+                            .fill(ACCENT_DARK)
+                            .min_size(egui::vec2(ui.available_width(), 38.0)),
+                    )
+                    .clicked()
+                {
+                    self.begin_auth();
+                }
+                ui.add_space(8.0);
 
                 if self.store.characters.is_empty() {
                     empty_sidebar_card(
@@ -177,99 +207,95 @@ impl App {
                         .inner_margin(12)
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width().max(200.0));
-                            ui.horizontal_top(|ui| {
-                                ui.vertical(|ui| {
-                                    identity_image(
-                                        ui,
-                                        self.identity_images
-                                            .get(&IdentityImageKey::Character(character.id)),
-                                        64.0,
-                                        character.name.chars().next().unwrap_or('?'),
-                                        "Character portrait",
+                            egui::collapsing_header::CollapsingState::load_with_default_open(
+                                ui.ctx(),
+                                ui.make_persistent_id(("connected_character", character.id)),
+                                false,
+                            )
+                            .show_header(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    let (rect, _) = ui.allocate_exact_size(
+                                        egui::vec2(10.0, 10.0),
+                                        egui::Sense::hover(),
                                     );
-                                    if let Some(corporation_id) = character.corporation_id {
-                                        ui.horizontal(|ui| {
-                                            ui.add_space(16.0);
-                                            identity_image(
-                                                ui,
-                                                self.identity_images.get(
-                                                    &IdentityImageKey::Corporation(corporation_id),
-                                                ),
-                                                32.0,
-                                                'C',
-                                                "Corporation logo",
-                                            );
-                                        });
-                                    }
+                                    ui.painter().circle_filled(rect.center(), 4.0, SUCCESS);
+                                    ui.label(egui::RichText::new(&character.name).strong());
                                 });
-                                ui.vertical(|ui| {
-                                    ui.horizontal(|ui| {
-                                        let (rect, _) = ui.allocate_exact_size(
-                                            egui::vec2(10.0, 10.0),
-                                            egui::Sense::hover(),
+                            })
+                            .body_unindented(|ui| {
+                                ui.add_space(8.0);
+                                ui.horizontal_top(|ui| {
+                                    ui.vertical(|ui| {
+                                        identity_image(
+                                            ui,
+                                            self.identity_images
+                                                .get(&IdentityImageKey::Character(character.id)),
+                                            64.0,
+                                            character.name.chars().next().unwrap_or('?'),
+                                            "Character portrait",
                                         );
-                                        ui.painter().circle_filled(rect.center(), 4.0, SUCCESS);
+                                        if let Some(corporation_id) = character.corporation_id {
+                                            ui.horizontal(|ui| {
+                                                ui.add_space(16.0);
+                                                identity_image(
+                                                    ui,
+                                                    self.identity_images.get(
+                                                        &IdentityImageKey::Corporation(
+                                                            corporation_id,
+                                                        ),
+                                                    ),
+                                                    32.0,
+                                                    'C',
+                                                    "Corporation logo",
+                                                );
+                                            });
+                                        }
+                                    });
+                                    ui.vertical(|ui| {
                                         ui.add(
                                             egui::Label::new(
-                                                egui::RichText::new(&character.name).strong(),
+                                                egui::RichText::new(format!(
+                                                    "Character {}",
+                                                    character.id
+                                                ))
+                                                .small()
+                                                .color(MUTED),
                                             )
                                             .truncate(),
                                         );
+                                        if let (Some(corporation_id), Some(corporation)) =
+                                            (character.corporation_id, &character.corporation_name)
+                                        {
+                                            ui.add_space(12.0);
+                                            ui.add(egui::Label::new(corporation).truncate());
+                                            ui.label(
+                                                egui::RichText::new(format!(
+                                                    "Corporation {corporation_id}"
+                                                ))
+                                                .small()
+                                                .color(MUTED),
+                                            );
+                                        }
                                     });
-                                    ui.add(
-                                        egui::Label::new(
-                                            egui::RichText::new(format!(
-                                                "Character {}",
-                                                character.id
-                                            ))
-                                            .small()
-                                            .color(MUTED),
-                                        )
-                                        .truncate(),
-                                    );
-                                    if let (Some(corporation_id), Some(corporation)) =
-                                        (character.corporation_id, &character.corporation_name)
-                                    {
-                                        ui.add_space(12.0);
-                                        ui.add(egui::Label::new(corporation).truncate());
-                                        ui.label(
-                                            egui::RichText::new(format!(
-                                                "Corporation {corporation_id}"
-                                            ))
-                                            .small()
-                                            .color(MUTED),
-                                        );
-                                    }
                                 });
+                                let enabled = self.persisted_controls_enabled();
+                                let response =
+                                    ui.add_enabled(enabled, egui::Button::new("Disconnect"));
+                                response.widget_info(|| {
+                                    egui::WidgetInfo::labeled(
+                                        egui::WidgetType::Button,
+                                        enabled,
+                                        format!("Disconnect {}", character.name),
+                                    )
+                                });
+                                if response.clicked() {
+                                    remove_character = Some(character.clone());
+                                }
                             });
-                            let enabled = self.persisted_controls_enabled();
-                            let response = ui.add_enabled(enabled, egui::Button::new("Disconnect"));
-                            response.widget_info(|| {
-                                egui::WidgetInfo::labeled(
-                                    egui::WidgetType::Button,
-                                    enabled,
-                                    format!("Disconnect {}", character.name),
-                                )
-                            });
-                            if response.clicked() {
-                                remove_character = Some(character.clone());
-                            }
                         });
                 }
                 if let Some(character) = remove_character {
                     self.pending_character_removal = Some(character);
-                }
-
-                if ui
-                    .add_enabled(
-                        self.persisted_controls_enabled(),
-                        egui::Button::new("+  Connect another character")
-                            .fill(ACCENT_DARK)
-                            .min_size(egui::vec2(ui.available_width(), 38.0)),
-                    )
-                    .clicked()
-                {
-                    self.begin_auth();
                 }
 
                 ui.add_space(22.0);
@@ -290,40 +316,24 @@ impl App {
                             self.status_history.len()
                         ))
                         .default_open(false)
-                        .show(ui, |ui| {
-                            egui::ScrollArea::vertical()
-                                .id_salt("activity_log")
-                                .min_scrolled_height(300.0)
-                                .max_height(420.0)
-                                .stick_to_bottom(true)
-                                .show(ui, |ui| {
-                                    ui.vertical(|ui| {
+                        .show_unindented(ui, |ui| {
+                            ui.add_space(6.0);
+                            for message in &self.status_history {
+                                egui::Frame::new()
+                                    .fill(SURFACE)
+                                    .corner_radius(4)
+                                    .inner_margin(egui::Margin::symmetric(8, 7))
+                                    .show(ui, |ui| {
                                         ui.set_width(ui.available_width());
-                                        for (index, message) in
-                                            self.status_history.iter().enumerate()
-                                        {
-                                            egui::Frame::new()
-                                                .fill(if index % 2 == 0 {
-                                                    SURFACE
-                                                } else {
-                                                    SURFACE_RAISED
-                                                })
-                                                .corner_radius(4)
-                                                .inner_margin(egui::Margin::symmetric(8, 7))
-                                                .show(ui, |ui| {
-                                                    ui.set_width(ui.available_width());
-                                                    ui.add(
-                                                        egui::Label::new(
-                                                            egui::RichText::new(message)
-                                                                .color(MUTED),
-                                                        )
-                                                        .wrap(),
-                                                    );
-                                                });
-                                            ui.add_space(3.0);
-                                        }
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(message).color(MUTED),
+                                            )
+                                            .wrap(),
+                                        );
                                     });
-                                });
+                                ui.add_space(6.0);
+                            }
                         });
                     });
             });
@@ -347,116 +357,143 @@ impl App {
             + self.store.manually_protected_corporations.len();
 
         section_label(ui, "PROTECTED VICTIMS");
-        ui.label(
-            egui::RichText::new("Excluded from bulk posting. Individual posting remains explicit.")
-                .small()
-                .color(MUTED),
-        );
-        ui.add_space(5.0);
-        egui::CollapsingHeader::new(format!(
-            "{} automatic - {} manual",
-            automatic_count, manual_count
-        ))
-        .default_open(false)
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new("Automatic protection").strong());
-            for character in &self.store.characters {
-                ui.label(format!("Character - {}", character.name));
-            }
-            let mut corporation_ids = HashSet::new();
-            for character in &self.store.characters {
-                if let (Some(id), Some(name)) =
-                    (character.corporation_id, &character.corporation_name)
-                {
-                    if corporation_ids.insert(id) {
-                        ui.label(format!("Corporation - {name}"));
-                    }
-                }
-            }
-            if automatic_count == 0 {
-                ui.label(egui::RichText::new("None yet").color(MUTED));
-            }
-
-            ui.add_space(10.0);
-            ui.label(egui::RichText::new("Manual protection").strong());
-            let mut remove = None;
-            for victim in &self.store.manually_protected_characters {
-                protected_victim_row(
-                    ui,
-                    "Character",
-                    &victim.name,
-                    victim.id,
-                    self.persistence_blocked.is_none(),
-                    &mut remove,
-                    ProtectedVictimKind::Character,
+        egui::Frame::new()
+            .fill(SURFACE_RAISED)
+            .corner_radius(8)
+            .inner_margin(12)
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    egui::RichText::new(
+                        "Excluded from bulk posting. Individual posting remains explicit.",
+                    )
+                    .small()
+                    .color(MUTED),
                 );
-            }
-            for victim in &self.store.manually_protected_corporations {
-                protected_victim_row(
-                    ui,
-                    "Corporation",
-                    &victim.name,
-                    victim.id,
-                    self.persistence_blocked.is_none(),
-                    &mut remove,
-                    ProtectedVictimKind::Corporation,
-                );
-            }
-            if manual_count == 0 {
-                ui.label(egui::RichText::new("No manually protected victims").color(MUTED));
-            }
+                ui.add_space(5.0);
+                egui::CollapsingHeader::new(format!(
+                    "{} automatic - {} manual",
+                    automatic_count, manual_count
+                ))
+                .default_open(false)
+                .show_unindented(ui, |ui| {
+                    ui.add_space(6.0);
+                    egui::Frame::new()
+                        .fill(SURFACE)
+                        .corner_radius(4)
+                        .inner_margin(egui::Margin::symmetric(8, 7))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(egui::RichText::new("Automatic protection").strong());
+                            for character in &self.store.characters {
+                                ui.label(format!("Character - {}", character.name));
+                            }
+                            let mut corporation_ids = HashSet::new();
+                            for character in &self.store.characters {
+                                if let (Some(id), Some(name)) =
+                                    (character.corporation_id, &character.corporation_name)
+                                {
+                                    if corporation_ids.insert(id) {
+                                        ui.label(format!("Corporation - {name}"));
+                                    }
+                                }
+                            }
+                            if automatic_count == 0 {
+                                ui.label(egui::RichText::new("None yet").color(MUTED));
+                            }
+                        });
 
-            ui.add_space(8.0);
-            egui::ComboBox::from_id_salt("protected_victim_kind")
-                .selected_text(match self.new_protected_victim_kind {
-                    ProtectedVictimKind::Character => "Character",
-                    ProtectedVictimKind::Corporation => "Corporation",
-                })
-                .width(ui.available_width())
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(
-                        &mut self.new_protected_victim_kind,
-                        ProtectedVictimKind::Character,
-                        "Character",
-                    );
-                    ui.selectable_value(
-                        &mut self.new_protected_victim_kind,
-                        ProtectedVictimKind::Corporation,
-                        "Corporation",
-                    );
+                    ui.add_space(10.0);
+                    egui::Frame::new()
+                        .fill(SURFACE)
+                        .corner_radius(4)
+                        .inner_margin(egui::Margin::symmetric(8, 7))
+                        .show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(egui::RichText::new("Manual protection").strong());
+                            let mut remove = None;
+                            for victim in &self.store.manually_protected_characters {
+                                protected_victim_row(
+                                    ui,
+                                    "Character",
+                                    &victim.name,
+                                    victim.id,
+                                    self.persistence_blocked.is_none(),
+                                    &mut remove,
+                                    ProtectedVictimKind::Character,
+                                );
+                            }
+                            for victim in &self.store.manually_protected_corporations {
+                                protected_victim_row(
+                                    ui,
+                                    "Corporation",
+                                    &victim.name,
+                                    victim.id,
+                                    self.persistence_blocked.is_none(),
+                                    &mut remove,
+                                    ProtectedVictimKind::Corporation,
+                                );
+                            }
+                            if manual_count == 0 {
+                                ui.label(
+                                    egui::RichText::new("No manually protected victims")
+                                        .color(MUTED),
+                                );
+                            }
+
+                            ui.add_space(8.0);
+                            egui::ComboBox::from_id_salt("protected_victim_kind")
+                                .selected_text(match self.new_protected_victim_kind {
+                                    ProtectedVictimKind::Character => "Character",
+                                    ProtectedVictimKind::Corporation => "Corporation",
+                                })
+                                .width(ui.available_width())
+                                .show_ui(ui, |ui| {
+                                    ui.selectable_value(
+                                        &mut self.new_protected_victim_kind,
+                                        ProtectedVictimKind::Character,
+                                        "Character",
+                                    );
+                                    ui.selectable_value(
+                                        &mut self.new_protected_victim_kind,
+                                        ProtectedVictimKind::Corporation,
+                                        "Corporation",
+                                    );
+                                });
+                            let input_label = ui.label("Protected victim name or ID");
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.new_protected_victim_query)
+                                    .hint_text("Exact name or EVE ID")
+                                    .desired_width(ui.available_width()),
+                            )
+                            .labelled_by(input_label.id);
+                            if ui
+                                .add_enabled(
+                                    self.persisted_controls_enabled(),
+                                    egui::Button::new("Add protected victim"),
+                                )
+                                .clicked()
+                            {
+                                self.begin_add_protected_victim();
+                            }
+
+                            if let Some((kind, id)) = remove {
+                                match kind {
+                                    ProtectedVictimKind::Character => self
+                                        .store
+                                        .manually_protected_characters
+                                        .retain(|entry| entry.id != id),
+                                    ProtectedVictimKind::Corporation => self
+                                        .store
+                                        .manually_protected_corporations
+                                        .retain(|entry| entry.id != id),
+                                }
+                                self.persist_or_log_error();
+                                self.log(format!("Removed protected victim with EVE ID {id}"));
+                            }
+                        });
                 });
-            let input_label = ui.label("Protected victim name or ID");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.new_protected_victim_query)
-                    .hint_text("Exact name or EVE ID")
-                    .desired_width(ui.available_width()),
-            )
-            .labelled_by(input_label.id);
-            if ui
-                .add_enabled(
-                    self.persisted_controls_enabled(),
-                    egui::Button::new("Add protected victim"),
-                )
-                .clicked()
-            {
-                self.begin_add_protected_victim();
-            }
-
-            if let Some((kind, id)) = remove {
-                match kind {
-                    ProtectedVictimKind::Character => self
-                        .store
-                        .manually_protected_characters
-                        .retain(|entry| entry.id != id),
-                    ProtectedVictimKind::Corporation => self
-                        .store
-                        .manually_protected_corporations
-                        .retain(|entry| entry.id != id),
-                }
-                self.persist_or_log_error();
-                self.log(format!("Removed protected victim with EVE ID {id}"));
-            }
-        });
+            });
     }
 
     fn show_review_workspace(&mut self, ui: &mut egui::Ui) {
@@ -473,80 +510,23 @@ impl App {
             .text_styles
             .insert(egui::TextStyle::Heading, egui::FontId::proportional(23.0));
 
+        self.show_queue_toolbar(ui);
+        ui.add_space(8.0);
+
         let pane_height = ui.available_height().max(120.0);
         egui::ScrollArea::vertical()
             .id_salt("review_workspace")
             .max_height(pane_height)
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.heading("Review queue");
-                        ui.label(
-                            egui::RichText::new(
-                                "Only confirmed, unreported killmails can be submitted.",
-                            )
-                            .color(MUTED),
-                        );
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let enabled =
-                            self.persisted_controls_enabled() && !self.store.characters.is_empty();
-                        let response = ui.add_enabled(
-                            enabled,
-                            egui::Button::new("Refresh killmails").fill(SURFACE_RAISED),
-                        );
-                        response.widget_info(|| {
-                            egui::WidgetInfo::labeled(
-                                egui::WidgetType::Button,
-                                enabled,
-                                "Refresh killmails",
-                            )
-                        });
-                        if response.clicked() {
-                            self.refresh_killmails();
-                        }
-                    });
-                });
-                ui.add_space(14.0);
-                self.show_posting_summary(ui);
-                ui.add_space(18.0);
-                self.show_queue_toolbar(ui);
-                ui.add_space(8.0);
                 self.show_recent_killmails(ui);
                 self.show_session_reports(ui);
             });
     }
 
-    fn show_posting_summary(&self, ui: &mut egui::Ui) {
-        let summary = posting_summary(&self.store, &self.store.cached_killmails, unix_time());
-        ui.columns(3, |columns| {
-            metric_card(
-                &mut columns[0],
-                summary.eligible_for_bulk_posting,
-                "ELIGIBLE",
-                "Ready for bulk posting",
-                SUCCESS,
-            );
-            metric_card(
-                &mut columns[1],
-                summary.protected,
-                "PROTECTED",
-                "Excluded from bulk posting",
-                WARNING,
-            );
-            metric_card(
-                &mut columns[2],
-                summary.awaiting_status,
-                "CHECKING",
-                "Awaiting zKillboard status",
-                MUTED,
-            );
-        });
-    }
-
     fn show_queue_toolbar(&mut self, ui: &mut egui::Ui) {
         let now = unix_time();
+        let summary = posting_summary(&self.store, &self.store.cached_killmails, now);
         let eligible_count = self
             .store
             .cached_killmails
@@ -561,19 +541,37 @@ impl App {
             .inner_margin(12)
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    let changed = ui
-                        .add_enabled_ui(self.persistence_blocked.is_none(), |ui| {
-                            ui.checkbox(
-                                &mut self.store.show_protected_killmails,
-                                "Show protected killmails",
-                            )
-                            .changed()
-                        })
-                        .inner;
-                    if changed {
-                        self.persist_or_log_error();
-                    }
+                    ui.vertical(|ui| {
+                        ui.heading("Killmails");
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} eligible · {} protected · {} checking",
+                                summary.eligible_for_bulk_posting,
+                                summary.protected,
+                                summary.awaiting_status,
+                            ))
+                            .small()
+                            .color(MUTED),
+                        );
+                    });
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let refresh_enabled =
+                            self.persisted_controls_enabled() && !self.store.characters.is_empty();
+                        let refresh = ui.add_enabled(
+                            refresh_enabled,
+                            egui::Button::new("Refresh killmails").fill(SURFACE_RAISED),
+                        );
+                        refresh.widget_info(|| {
+                            egui::WidgetInfo::labeled(
+                                egui::WidgetType::Button,
+                                refresh_enabled,
+                                "Refresh killmails",
+                            )
+                        });
+                        if refresh.clicked() {
+                            self.refresh_killmails();
+                        }
+
                         if ui
                             .add_enabled(
                                 !self.is_busy() && eligible_count > 0,
@@ -586,6 +584,19 @@ impl App {
                             .clicked()
                         {
                             self.request_bulk_post();
+                        }
+
+                        let changed = ui
+                            .add_enabled_ui(self.persistence_blocked.is_none(), |ui| {
+                                ui.checkbox(
+                                    &mut self.store.show_protected_killmails,
+                                    "Show protected killmails",
+                                )
+                                .changed()
+                            })
+                            .inner;
+                        if changed {
+                            self.persist_or_log_error();
                         }
                     });
                 });
@@ -806,7 +817,12 @@ impl eframe::App for App {
                     .frame(
                         egui::Frame::new()
                             .fill(egui::Color32::from_rgb(14, 19, 24))
-                            .inner_margin(egui::Margin::symmetric(18, 0)),
+                            .inner_margin(egui::Margin {
+                                left: 18,
+                                right: 2,
+                                top: 0,
+                                bottom: 0,
+                            }),
                     )
                     .show(ui, |ui| {
                         self.show_review_workspace(ui);

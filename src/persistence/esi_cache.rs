@@ -306,6 +306,7 @@ mod tests {
             entry.last_modified.as_deref(),
             Some("Thu, 31 Dec 2099 22:59:59 GMT")
         );
+        drop(cache);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -321,6 +322,7 @@ mod tests {
             .load("https://esi.example/no-expiry/")
             .unwrap()
             .is_none());
+        drop(cache);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
@@ -344,6 +346,7 @@ mod tests {
                 & 0o777,
             0o700
         );
+        drop(_cache);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 }

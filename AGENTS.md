@@ -40,8 +40,9 @@
   and persistence coordination.
 - `src/app/operations.rs` owns operation startup and submission revalidation.
 - `src/app/events.rs` owns worker-event handling and operation completion.
-- `src/app/ui.rs` owns egui rendering and user interactions, decomposed into
-  section-level rendering methods.
+- `src/app/ui/` owns egui rendering and user interactions: `mod.rs` owns the
+  app frame and section-level methods, `components.rs` owns shared widgets,
+  and `killmail.rs` owns killmail-card and detail rendering.
 - `src/app/worker.rs` owns blocking background work and worker events.
 - `src/killmail.rs` owns killmail visibility, reporting status, protection,
   and submission policy.
@@ -49,6 +50,10 @@
   ESI data access, EVE image-service portraits and logos, and zKillboard lookup
   and submission. Its single backend interface separates the live adapters from
   the feature-gated offline simulator used by workers and UI tests.
+- `src/integrations/esi/` owns the ESI adapter: `client.rs` centralizes cached
+  HTTP behavior, `killmails.rs` assembles killmails, `universe.rs` resolves
+  EVE identities, `market.rs` estimates values, and `types.rs` contains
+  private response DTOs.
 - `dev/scenarios/` owns synthetic JSON scenarios for offline development. The
   `dev-tools` feature enables scenario launch and eframe inspection for agent
   control; live runs must never expose the inspection interface.

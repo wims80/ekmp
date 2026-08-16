@@ -15,7 +15,7 @@ jobs:
   build-linux:
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
       - name: Confirm tag version
         shell: bash
@@ -43,7 +43,7 @@ jobs:
           sed 's|@EXEC_PATH@|/home/tester/.local/bin/ekmp|' packaging/linux/ekmp.desktop.in > ekmp.desktop
           desktop-file-validate ekmp.desktop
       - run: bash scripts/package-linux.sh "${GITHUB_REF_NAME#v}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-linux
           path: dist/*.tar.gz
@@ -52,7 +52,7 @@ jobs:
   build-windows:
     runs-on: windows-2022
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
       - name: Confirm tag version
         shell: pwsh
@@ -66,7 +66,7 @@ jobs:
       - run: cargo +1.97.1 build --locked --release
       - shell: pwsh
         run: scripts/package-windows.ps1 -Version $env:GITHUB_REF_NAME.Substring(1)
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-windows
           path: dist/*.zip
@@ -78,7 +78,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v8
         with:
           pattern: release-*
           path: release-assets

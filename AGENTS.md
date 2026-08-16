@@ -45,14 +45,16 @@
 - `src/app/worker.rs` owns blocking background work and worker events.
 - `src/killmail.rs` owns killmail visibility, reporting status, protection,
   and submission policy.
-- `src/auth.rs`, `src/esi.rs`, and `src/zkill.rs` are API-specific modules.
+- `src/integrations/` owns external API integrations: EVE SSO authentication,
+  ESI data access, and zKillboard lookup and submission.
 - `src/models.rs` contains persisted and domain models.
-- `src/secrets.rs` owns cross-platform refresh-token storage: Secret Service on
-  Linux, Keychain on macOS, and Credential Manager on Windows. It also supports
-  the common JSON fallback when a credential store fails; keep its work off the
-  UI thread.
-- `src/storage.rs` owns local configuration loading and atomic saving, including
-  restrictive Unix file permissions and fail-safe handling of unreadable state.
+- `src/persistence/secrets.rs` owns cross-platform refresh-token storage:
+  Secret Service on Linux, Keychain on macOS, and Credential Manager on
+  Windows. It also supports the common JSON fallback when a credential store
+  fails; keep its work off the UI thread.
+- `src/persistence/storage.rs` owns local configuration loading and atomic
+  saving, including restrictive Unix file permissions and fail-safe handling
+  of unreadable state.
 - `packaging/linux/` owns files installed by the Linux release archive;
   `scripts/package-linux.sh` and `scripts/package-windows.ps1` assemble the
   platform release archives.

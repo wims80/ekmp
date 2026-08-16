@@ -1,4 +1,4 @@
-use crate::{models::Character, secrets};
+use crate::{models::Character, persistence::secrets};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::{rngs::OsRng, TryRngCore};
 use reqwest::{blocking::Client, Url};

@@ -1,5 +1,5 @@
 use crate::{
-    auth,
+    integrations::auth,
     models::{Character, Killmail},
 };
 use reqwest::blocking::Client;

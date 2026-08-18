@@ -324,7 +324,7 @@ impl App {
             } else {
                 self.expanded_killmail_ids.remove(&mail.id);
             }
-            ui.add_space(8.0);
+            ui.add_space(6.0);
         }
         if let Some(mail) = post_mail {
             self.start_posts(vec![mail], SubmissionMode::Individual);

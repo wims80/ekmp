@@ -1,6 +1,6 @@
 # Release runbook
 
-This runbook covers the `v0.1.2` pre-release of EVE Killmail Publisher.
+This runbook covers the `v0.2.0` release of EVE Killmail Publisher.
 It ships x86-64 Linux (glibc 2.35+) and x86-64 Windows builds.
 
 ## One-time GitHub setup

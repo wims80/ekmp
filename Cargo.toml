@@ -1,6 +1,6 @@
 [package]
 name = "ekmp"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 description = "A desktop utility for reviewing and explicitly publishing EVE Online killmails to zKillboard"
 license = "MIT"

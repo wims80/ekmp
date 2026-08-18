@@ -31,13 +31,13 @@ pub(super) fn killmail_card(
         .fill(SURFACE_RAISED)
         .stroke(egui::Stroke::new(1.0, edge_color))
         .corner_radius(8)
-        .inner_margin(14)
+        .inner_margin(10)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
                 let action = if expanded { "Collapse" } else { "Expand" };
                 let (_rect, response) =
-                    ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::click());
+                    ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
                 egui::collapsing_header::paint_default_icon(
                     ui,
                     if expanded { 1.0 } else { 0.0 },
@@ -56,7 +56,7 @@ pub(super) fn killmail_card(
                 }
 
                 ui.vertical(|ui| {
-                    ui.label(egui::RichText::new(&mail.victim).size(17.0).strong());
+                    ui.label(egui::RichText::new(&mail.victim).size(16.0).strong());
                     ui.label(
                         egui::RichText::new(format!(
                             "{}  -  {}  -  {}",
@@ -64,6 +64,7 @@ pub(super) fn killmail_card(
                             estimated_value_label(mail.estimated_value_isk),
                             mail.time
                         ))
+                        .small()
                         .color(MUTED),
                     );
                 });

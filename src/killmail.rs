@@ -16,6 +16,7 @@ pub(crate) enum ProtectionReason {
     AuthenticatedCorporation(String),
     ManuallyProtectedCharacter(String),
     ManuallyProtectedCorporation(String),
+    ManuallyProtectedKillmail,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -26,8 +27,11 @@ pub(crate) struct PostingSummary {
     pub protection_reasons: Vec<(ProtectionReason, usize)>,
 }
 
-pub(crate) fn protected_victim_reasons(store: &Store, mail: &Killmail) -> Vec<ProtectionReason> {
+pub(crate) fn protection_reasons(store: &Store, mail: &Killmail) -> Vec<ProtectionReason> {
     let mut reasons = Vec::new();
+    if store.manually_protected_killmail_ids.contains(&mail.id) {
+        reasons.push(ProtectionReason::ManuallyProtectedKillmail);
+    }
     if let Some(victim_id) = mail.victim_id {
         if let Some(character) = store
             .characters
@@ -70,7 +74,7 @@ pub(crate) fn protected_victim_reasons(store: &Store, mail: &Killmail) -> Vec<Pr
 }
 
 pub(crate) fn is_eligible_for_bulk_posting(store: &Store, mail: &Killmail) -> bool {
-    protected_victim_reasons(store, mail).is_empty()
+    protection_reasons(store, mail).is_empty()
 }
 
 fn is_killmail_visible(store: &Store, mail: &Killmail, now: u64) -> bool {
@@ -110,6 +114,15 @@ pub(crate) fn remove_reported_killmails(
             .is_some_and(|entry| entry.reported)
     });
     previous_len - killmails.len()
+}
+
+pub(crate) fn remove_reported_killmail_flags(
+    zkill_cache: &HashMap<u64, ZkillCacheEntry>,
+    protected_killmail_ids: &mut Vec<u64>,
+) -> usize {
+    let previous_len = protected_killmail_ids.len();
+    protected_killmail_ids.retain(|id| !zkill_cache.get(id).is_some_and(|entry| entry.reported));
+    previous_len - protected_killmail_ids.len()
 }
 
 pub(crate) fn remove_killmails_for_removed_character(
@@ -169,14 +182,14 @@ pub(crate) fn posting_summary(store: &Store, killmails: &[Killmail], now: u64) -
         awaiting_status: 0,
         protection_reasons: Vec::new(),
     };
-    let mut protection_reasons = BTreeMap::new();
+    let mut protection_reason_counts = BTreeMap::new();
 
     for mail in killmails {
         if report_state(store, mail.id, now) == ReportState::Reported {
             continue;
         }
 
-        let reasons = protected_victim_reasons(store, mail);
+        let reasons = protection_reasons(store, mail);
         if reasons.is_empty() {
             match report_state(store, mail.id, now) {
                 ReportState::Unreported => summary.eligible_for_bulk_posting += 1,
@@ -186,12 +199,12 @@ pub(crate) fn posting_summary(store: &Store, killmails: &[Killmail], now: u64) -
         } else {
             summary.protected += 1;
             for reason in reasons {
-                *protection_reasons.entry(reason).or_default() += 1;
+                *protection_reason_counts.entry(reason).or_default() += 1;
             }
         }
     }
 
-    summary.protection_reasons = protection_reasons.into_iter().collect();
+    summary.protection_reasons = protection_reason_counts.into_iter().collect();
     summary
 }
 
@@ -377,6 +390,26 @@ mod tests {
                 .id,
             10
         );
+
+        store.manually_protected_killmail_ids.push(11);
+        let protected_by_flag = mail(11, &[1], None);
+        store.zkill_cache.insert(
+            11,
+            ZkillCacheEntry {
+                reported: false,
+                checked_at: 100,
+            },
+        );
+
+        assert!(
+            bulk_submission_candidates(&store, vec![protected_by_flag.clone()], 100).is_empty()
+        );
+        assert_eq!(
+            individual_submission_candidate(&store, protected_by_flag, 100)
+                .unwrap()
+                .id,
+            11
+        );
     }
 
     #[test]
@@ -441,6 +474,57 @@ mod tests {
     }
 
     #[test]
+    fn manually_protected_killmail_is_hidden_and_summarized_as_protected() {
+        let mut store = store();
+        store.manually_protected_killmail_ids.push(10);
+        store.zkill_cache.insert(
+            10,
+            ZkillCacheEntry {
+                reported: false,
+                checked_at: 100,
+            },
+        );
+        let protected = mail(10, &[1], None);
+
+        assert!(!is_killmail_visible(&store, &protected, 100));
+        assert_eq!(
+            posting_summary(&store, std::slice::from_ref(&protected), 100),
+            PostingSummary {
+                eligible_for_bulk_posting: 0,
+                protected: 1,
+                awaiting_status: 0,
+                protection_reasons: vec![(ProtectionReason::ManuallyProtectedKillmail, 1)],
+            }
+        );
+
+        store.show_protected_killmails = true;
+        assert!(is_killmail_visible(&store, &protected, 100));
+    }
+
+    #[test]
+    fn removing_a_killmail_flag_does_not_override_protected_victim_policy() {
+        let mut store = store();
+        store.manually_protected_characters.push(ProtectedVictim {
+            id: 2,
+            name: "Protected Pilot".into(),
+        });
+        store.manually_protected_killmail_ids.push(10);
+        let protected = mail(10, &[1], Some(2));
+
+        assert_eq!(protection_reasons(&store, &protected).len(), 2);
+
+        store.manually_protected_killmail_ids.clear();
+
+        assert_eq!(
+            protection_reasons(&store, &protected),
+            vec![ProtectionReason::ManuallyProtectedCharacter(
+                "Protected Pilot".into()
+            )]
+        );
+        assert!(!is_eligible_for_bulk_posting(&store, &protected));
+    }
+
+    #[test]
     fn reported_killmails_are_removed_from_cached_snapshots() {
         let mut store = store();
         for id in [12, 14] {
@@ -474,6 +558,32 @@ mod tests {
 
         assert_eq!(removed, 2);
         assert_eq!(ids, vec![11, 12, 14]);
+    }
+
+    #[test]
+    fn protection_flags_are_removed_only_for_reported_killmails() {
+        let mut store = store();
+        store.zkill_cache.insert(
+            10,
+            ZkillCacheEntry {
+                reported: true,
+                checked_at: 100,
+            },
+        );
+        store.zkill_cache.insert(
+            11,
+            ZkillCacheEntry {
+                reported: false,
+                checked_at: 100,
+            },
+        );
+        let mut protected_ids = vec![10, 11, 12];
+
+        assert_eq!(
+            remove_reported_killmail_flags(&store.zkill_cache, &mut protected_ids),
+            1
+        );
+        assert_eq!(protected_ids, vec![11, 12]);
     }
 
     #[test]

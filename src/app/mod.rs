@@ -6,7 +6,8 @@ mod worker;
 use crate::{
     integrations::backend::{Backend, LiveBackend},
     killmail::{
-        posting_summary, remove_killmails_without_authenticated_sources, remove_reported_killmails,
+        posting_summary, remove_killmails_without_authenticated_sources,
+        remove_reported_killmail_flags, remove_reported_killmails,
     },
     models::{Character, Killmail, ProtectedVictimKind, Store, ZKILL_STATUS_CACHE_VERSION},
     persistence::storage,
@@ -156,6 +157,10 @@ impl App {
         let invalidated_unreported = invalidate_outdated_negative_statuses(store);
         let removed_reported =
             remove_reported_killmails(&store.zkill_cache, &mut store.cached_killmails);
+        let removed_reported_flags = remove_reported_killmail_flags(
+            &store.zkill_cache,
+            &mut store.manually_protected_killmail_ids,
+        );
         let store_view = store.clone();
         let removed_orphaned = remove_killmails_without_authenticated_sources(
             &store_view,
@@ -186,7 +191,11 @@ impl App {
             app.log(format!(
                 "Could not safely load local state; saving is disabled: {error}"
             ));
-        } else if invalidated_unreported > 0 || removed_reported > 0 || removed_orphaned > 0 {
+        } else if invalidated_unreported > 0
+            || removed_reported > 0
+            || removed_reported_flags > 0
+            || removed_orphaned > 0
+        {
             app.persist_or_log_error();
         }
         if invalidated_unreported > 0 {
@@ -385,6 +394,10 @@ impl App {
 
     fn prune_persisted_reported_killmails(&mut self) {
         remove_reported_killmails(&self.store.zkill_cache, &mut self.store.cached_killmails);
+        remove_reported_killmail_flags(
+            &self.store.zkill_cache,
+            &mut self.store.manually_protected_killmail_ids,
+        );
     }
 }
 

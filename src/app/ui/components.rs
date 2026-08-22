@@ -193,5 +193,6 @@ pub(super) fn protection_reason_label(reason: &ProtectionReason) -> String {
         }
         ProtectionReason::ManuallyProtectedCharacter(name) => format!("character {name}"),
         ProtectionReason::ManuallyProtectedCorporation(name) => format!("corporation {name}"),
+        ProtectionReason::ManuallyProtectedKillmail => "killmail flagged for protection".into(),
     }
 }

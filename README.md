@@ -16,6 +16,7 @@ and explicitly submitting selected killmails to zKillboard.
   the relevant paginated zKillboard feed for unknown entries at startup
 - Session-only results for explicitly submitted killmails, with zKillboard links
 - Configurable protected victim characters and corporations excluded from bulk posting
+- Persisted protection flags for individual killmails
 - A posting summary showing bulk-eligible, protected, and still-unchecked killmails
 - A separate `Post to zKillboard` button for each killmail still confirmed as
   unreported, revealed by expanding its compact killmail card
@@ -32,11 +33,13 @@ Killmails are never submitted automatically.
 
 Authenticated characters and their corporations are automatically protected.
 Additional victim characters and corporations can be added by exact EVE name
-or numeric ID under `Protected victims`. Killmails involving protected victims are excluded from bulk
-submission but, while confirmed as unreported, can still be submitted
-individually with the explicit `Post anyway` button. Protected killmails are
-hidden from the recent-killmail list by default and can be displayed with the
-persisted `Show protected killmails` checkbox.
+or numeric ID under `Protected victims`. An individual killmail can also be
+flagged or unflagged from its expanded card. Protection flags persist across
+restarts and refreshes until removed or until the killmail is reported.
+Protected killmails are excluded from bulk submission but, while confirmed as
+unreported, can still be submitted individually with the explicit `Post anyway`
+button. They are hidden from the recent-killmail list by default and can be
+displayed with the persisted `Show protected killmails` checkbox.
 
 ## Installation
 
@@ -85,12 +88,13 @@ times out after five minutes if the browser authorization is abandoned.
 
 The local configuration is stored in `~/.config/ekmp/ekmp.json` on Linux and
 `%APPDATA%\ekmp\ekmp.json` on Windows. It contains application preferences, a
-local snapshot of the most recently loaded killmails, and their zKillboard
-status cache. The snapshot is displayed immediately on the next startup. Full
-killmail records already reported to zKillboard are removed from the snapshot;
-only their compact status-cache entries are retained. Unreported results are
-checked again after 15 minutes. Matching unreported killmail snapshots are
-reused during refresh so their full ESI detail is not downloaded repeatedly.
+local snapshot of the most recently loaded killmails, individual killmail
+protection flags, and the zKillboard status cache. The snapshot is displayed
+immediately on the next startup. Full killmail records already reported to
+zKillboard are removed from the snapshot; only their compact status-cache
+entries are retained. Unreported results are checked again after 15 minutes.
+Matching unreported killmail snapshots are reused during refresh so their full
+ESI detail is not downloaded repeatedly.
 
 Character portraits, corporation and alliance logos, ship renders, and item
 icons from the EVE image service are loaded when needed and cached separately in

@@ -18,6 +18,8 @@ pub struct Store {
     pub manually_protected_characters: Vec<ProtectedVictim>,
     #[serde(default)]
     pub manually_protected_corporations: Vec<ProtectedVictim>,
+    #[serde(default)]
+    pub manually_protected_killmail_ids: Vec<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -183,6 +185,7 @@ mod tests {
         assert!(store.cached_killmails.is_empty());
         assert!(store.manually_protected_characters.is_empty());
         assert!(store.manually_protected_corporations.is_empty());
+        assert!(store.manually_protected_killmail_ids.is_empty());
         assert_eq!(store.characters[0].refresh_token.as_deref(), Some("token"));
         assert_eq!(store.characters[0].corporation_id, None);
     }
@@ -237,6 +240,7 @@ mod tests {
             id: 9,
             name: "Protected Corp".into(),
         });
+        store.manually_protected_killmail_ids.push(10);
         store.zkill_cache.insert(
             42,
             ZkillCacheEntry {
@@ -260,6 +264,7 @@ mod tests {
         );
         assert_eq!(restored.manually_protected_characters[0].id, 8);
         assert_eq!(restored.manually_protected_corporations[0].id, 9);
+        assert_eq!(restored.manually_protected_killmail_ids, vec![10]);
         assert_eq!(restored.zkill_status_cache_version, 0);
     }
 

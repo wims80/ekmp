@@ -5,13 +5,14 @@ use super::{
     },
     IdentityImageKey, IdentityImageState, Killmail, KillmailAttacker, KillmailItem, ReportState,
 };
-use crate::killmail::{protected_victim_reasons, report_state};
+use crate::killmail::{protection_reasons, report_state};
 use eframe::egui;
 
 pub(super) struct KillmailCardContext<'a> {
     pub(super) store: &'a crate::models::Store,
     pub(super) now: u64,
     pub(super) busy: bool,
+    pub(super) protection_controls_enabled: bool,
     pub(super) images: &'a std::collections::HashMap<IdentityImageKey, IdentityImageState>,
 }
 
@@ -21,9 +22,14 @@ pub(super) fn killmail_card(
     mail: &Killmail,
     mut expanded: bool,
     post_mail: &mut Option<Killmail>,
+    toggle_protection: &mut Option<u64>,
 ) -> bool {
-    let protection_reasons = protected_victim_reasons(context.store, mail);
+    let protection_reasons = protection_reasons(context.store, mail);
     let protected = !protection_reasons.is_empty();
+    let manually_protected = context
+        .store
+        .manually_protected_killmail_ids
+        .contains(&mail.id);
     let state = report_state(context.store, mail.id, context.now);
     let edge_color = if protected { WARNING } else { ACCENT_DARK };
 
@@ -98,9 +104,9 @@ pub(super) fn killmail_card(
                     );
                 }
 
-                if state == ReportState::Unreported {
-                    ui.add_space(8.0);
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_space(8.0);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if state == ReportState::Unreported {
                         let label = if protected {
                             "Post anyway"
                         } else {
@@ -120,8 +126,26 @@ pub(super) fn killmail_card(
                         if response.clicked() {
                             *post_mail = Some(mail.clone());
                         }
-                    });
-                }
+                    }
+
+                    let (label, accessible_label) = if manually_protected {
+                        (
+                            "Remove protection flag",
+                            format!("Remove protection flag from killmail {}", mail.id),
+                        )
+                    } else {
+                        ("Protect killmail", format!("Protect killmail {}", mail.id))
+                    };
+                    let response = accessible_button(
+                        ui,
+                        context.protection_controls_enabled,
+                        egui::Button::new(label).fill(SURFACE),
+                        accessible_label,
+                    );
+                    if response.clicked() {
+                        *toggle_protection = Some(mail.id);
+                    }
+                });
             }
         });
     expanded

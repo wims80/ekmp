@@ -311,15 +311,24 @@ impl App {
         }
 
         let mut post_mail = None;
+        let mut toggle_protection = None;
         let card_context = KillmailCardContext {
             store: &self.store,
             now,
             busy: self.is_busy(),
+            protection_controls_enabled: self.persisted_controls_enabled(),
             images: &self.identity_images,
         };
         for mail in visible_killmails {
             let expanded = self.expanded_killmail_ids.contains(&mail.id);
-            if killmail_card(ui, &card_context, mail, expanded, &mut post_mail) {
+            if killmail_card(
+                ui,
+                &card_context,
+                mail,
+                expanded,
+                &mut post_mail,
+                &mut toggle_protection,
+            ) {
                 self.expanded_killmail_ids.insert(mail.id);
             } else {
                 self.expanded_killmail_ids.remove(&mail.id);
@@ -328,6 +337,24 @@ impl App {
         }
         if let Some(mail) = post_mail {
             self.start_posts(vec![mail], SubmissionMode::Individual);
+        }
+        if let Some(killmail_id) = toggle_protection {
+            if let Some(index) = self
+                .store
+                .manually_protected_killmail_ids
+                .iter()
+                .position(|id| *id == killmail_id)
+            {
+                self.store.manually_protected_killmail_ids.remove(index);
+                self.persist_or_log_error();
+                self.log(format!(
+                    "Removed protection flag from killmail {killmail_id}"
+                ));
+            } else {
+                self.store.manually_protected_killmail_ids.push(killmail_id);
+                self.persist_or_log_error();
+                self.log(format!("Flagged killmail {killmail_id} for protection"));
+            }
         }
     }
 
@@ -485,7 +512,7 @@ impl eframe::App for App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{integrations::simulation, models::ProtectedVictim};
+    use crate::integrations::simulation;
     use egui_kittest::{kittest::Queryable, Harness};
     use std::sync::Arc;
 
@@ -615,6 +642,45 @@ mod tests {
     }
 
     #[test]
+    fn killmail_protection_can_be_toggled_from_the_expanded_card() {
+        let (mut harness, _backend) = mixed_harness();
+        harness.run_steps(4);
+        harness
+            .get_by_label("Expand killmail 9001")
+            .click_accesskit();
+        harness.run_steps(2);
+
+        harness
+            .get_by_label("Protect killmail 9001")
+            .click_accesskit();
+        harness.run_steps(2);
+
+        assert_eq!(
+            harness.state().store.manually_protected_killmail_ids,
+            vec![9001]
+        );
+        assert!(harness.query_by_label("Eligible Example").is_none());
+        assert!(harness.query_by_label("Post eligible (1)").is_some());
+
+        harness.state_mut().store.show_protected_killmails = true;
+        harness.run_steps(2);
+        assert!(harness
+            .query_by_label_contains("killmail flagged for protection")
+            .is_some());
+        harness
+            .get_by_label("Remove protection flag from killmail 9001")
+            .click_accesskit();
+        harness.run_steps(2);
+
+        assert!(harness
+            .state()
+            .store
+            .manually_protected_killmail_ids
+            .is_empty());
+        assert!(harness.query_by_label("Post eligible (2)").is_some());
+    }
+
+    #[test]
     fn bulk_confirmation_revalidates_protection_in_the_ui_workflow() {
         let (mut harness, backend) = mixed_harness();
         harness.run_steps(4);
@@ -624,11 +690,8 @@ mod tests {
         harness
             .state_mut()
             .store
-            .manually_protected_characters
-            .push(ProtectedVictim {
-                id: 3006,
-                name: "Newly Protected".into(),
-            });
+            .manually_protected_killmail_ids
+            .push(9006);
         harness.get_by_label("Confirm bulk post").click_accesskit();
         harness.run_steps(4);
 

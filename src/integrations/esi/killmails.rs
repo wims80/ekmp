@@ -1,30 +1,61 @@
 use super::{
-    cached_get_json, enrich_locations, esi_limit_error, estimate_killmail_value,
-    estimate_stored_killmail_value, market_prices, Character, Client, Detail, EsiCache, HashMap,
-    HashSet, Item, Killmail, KillmailAttacker, KillmailDetail, KillmailItem, KillmailLocation,
-    KillmailVictimDetail, Recent, UniverseName, USER_AGENT, USER_AGENT_VALUE,
+    active_cooldown_error, cached_get_json, client::observe_rate_limit, enrich_locations,
+    esi_limit_error, estimate_killmail_value, estimate_stored_killmail_value, http_client,
+    market_prices, Character, Client, Detail, EsiCache, HashMap, HashSet, Item, Killmail,
+    KillmailAttacker, KillmailDetail, KillmailItem, KillmailLocation, KillmailVictimDetail, Recent,
+    UniverseName, USER_AGENT, USER_AGENT_VALUE,
 };
+use crate::integrations::backend::{CharacterRefreshFailure, LoadKillmailsOutcome};
+use std::sync::atomic::AtomicBool;
 
 pub(super) fn load_killmails_at(
     esi: &str,
     chars: &[Character],
     cached_killmails: &[Killmail],
     reported_ids: &HashSet<u64>,
+    cancelled: &AtomicBool,
     cache: &mut Option<EsiCache>,
-    mut access_token: impl FnMut(&Character) -> Result<String, String>,
-) -> Result<Vec<Killmail>, String> {
-    let client = Client::new();
+    mut access_token: impl FnMut(&mut Character) -> Result<String, String>,
+) -> Result<LoadKillmailsOutcome, String> {
+    let client = http_client()?;
     let mut pending = Vec::new();
     let mut positions = HashMap::new();
+    let mut character_failures = Vec::new();
     for c in chars {
-        let response: Vec<Recent> = cached_get_json(
-            &client,
-            cache,
-            format!("{esi}/characters/{}/killmails/recent/", c.id),
-            true,
-            || access_token(c).map(Some),
-            "Recent killmail request",
-        )?;
+        super::check_cancelled(cancelled)?;
+        let mut current_character = c.clone();
+        let response: Vec<Recent> =
+            match super::with_rate_limit_scope(format!("character:{}", c.id), || {
+                cached_get_json(
+                    &client,
+                    cache,
+                    format!("{esi}/characters/{}/killmails/recent/", c.id),
+                    true,
+                    || {
+                        let token = access_token(&mut current_character)?;
+                        super::check_cancelled(cancelled)?;
+                        Ok(Some(token))
+                    },
+                    "Recent killmail request",
+                )
+            }) {
+                Ok(response) => response,
+                Err(error)
+                    if !error.contains("error limit")
+                        && !error.contains("rate limited")
+                        && !error.contains("rate budget")
+                        && !error.contains("Persistence failure")
+                        && error != "Operation cancelled" =>
+                {
+                    character_failures.push(CharacterRefreshFailure {
+                        character_id: c.id,
+                        character_name: c.name.clone(),
+                        error,
+                    });
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
         for recent in response {
             if !reported_ids.contains(&recent.killmail_id) {
                 add_pending(&mut pending, &mut positions, recent, c);
@@ -32,9 +63,30 @@ pub(super) fn load_killmails_at(
         }
     }
     if pending.is_empty() {
-        return Ok(Vec::new());
+        let mut killmails = Vec::new();
+        retain_failed_character_cache(
+            &mut killmails,
+            cached_killmails,
+            reported_ids,
+            &character_failures,
+        );
+        return Ok(LoadKillmailsOutcome {
+            killmails,
+            character_failures,
+        });
     }
-    let market_prices = market_prices(&client, esi, cache).unwrap_or_default();
+    super::check_cancelled(cancelled)?;
+    let market_prices = match market_prices(&client, esi, cache) {
+        Ok(prices) => prices,
+        Err(error)
+            if error.contains("error limit")
+                || error.contains("rate limited")
+                || error.contains("rate budget") =>
+        {
+            return Err(error);
+        }
+        Err(_) => HashMap::new(),
+    };
     let cached_by_id = cached_killmails
         .iter()
         .map(|mail| (mail.id, mail))
@@ -42,6 +94,7 @@ pub(super) fn load_killmails_at(
     let mut mails = pending
         .into_iter()
         .map(|pending| -> Result<Killmail, String> {
+            super::check_cancelled(cancelled)?;
             let recent = &pending.recent;
             if let Some(cached) = cached_by_id
                 .get(&recent.killmail_id)
@@ -88,11 +141,69 @@ pub(super) fn load_killmails_at(
         })
         .collect::<Result<Vec<_>, _>>()?;
 
-    enrich_locations(&client, esi, cache, &mut mails)?;
-    if let Ok(names) = resolve_names(&client, esi, &mails) {
-        apply_names(&mut mails, &names);
+    enrich_locations(&client, esi, cache, &mut mails, cancelled)?;
+    match resolve_names(&client, esi, &mails, cancelled) {
+        Ok(names) => apply_names(&mut mails, &names),
+        Err(error)
+            if error == "Operation cancelled"
+                || error.contains("error limit")
+                || error.contains("rate limited")
+                || error.contains("rate budget") =>
+        {
+            return Err(error);
+        }
+        Err(_) => {}
     }
-    Ok(mails)
+    retain_failed_character_cache(
+        &mut mails,
+        cached_killmails,
+        reported_ids,
+        &character_failures,
+    );
+    Ok(LoadKillmailsOutcome {
+        killmails: mails,
+        character_failures,
+    })
+}
+
+fn retain_failed_character_cache(
+    refreshed: &mut Vec<Killmail>,
+    cached: &[Killmail],
+    reported_ids: &HashSet<u64>,
+    failures: &[CharacterRefreshFailure],
+) {
+    let failed_ids = failures
+        .iter()
+        .map(|failure| failure.character_id)
+        .collect::<HashSet<_>>();
+    if failed_ids.is_empty() {
+        return;
+    }
+    for old in cached
+        .iter()
+        .filter(|mail| !reported_ids.contains(&mail.id))
+    {
+        let failed_sources = old
+            .sources
+            .iter()
+            .filter(|source| failed_ids.contains(&source.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if failed_sources.is_empty() {
+            continue;
+        }
+        if let Some(current) = refreshed.iter_mut().find(|mail| mail.id == old.id) {
+            for source in failed_sources {
+                if !current.sources.iter().any(|known| known.id == source.id) {
+                    current.sources.push(source);
+                }
+            }
+        } else {
+            let mut retained = old.clone();
+            retained.sources = failed_sources;
+            refreshed.push(retained);
+        }
+    }
 }
 
 pub(super) fn add_pending(
@@ -179,6 +290,7 @@ fn resolve_names(
     client: &Client,
     esi: &str,
     mails: &[Killmail],
+    cancelled: &AtomicBool,
 ) -> Result<HashMap<u64, String>, String> {
     let mut ids = HashSet::new();
     for mail in mails {
@@ -206,20 +318,37 @@ fn resolve_names(
     ids.sort_unstable();
     let mut names = HashMap::new();
     for chunk in ids.chunks(1_000) {
+        super::check_cancelled(cancelled)?;
+        if let Some(error) = active_cooldown_error() {
+            return Err(error);
+        }
         let response = client
             .post(format!("{esi}/universe/names/"))
             .header(USER_AGENT, USER_AGENT_VALUE)
             .json(chunk)
             .send()
-            .map_err(|error| format!("EVE bulk name lookup failed: {error}"))?;
+            .map_err(|error| {
+                if error.is_timeout() {
+                    "EVE bulk name lookup timed out".to_string()
+                } else if error.is_connect() {
+                    "EVE bulk name lookup could not connect".to_string()
+                } else {
+                    "EVE bulk name lookup transport failed".to_string()
+                }
+            })?;
+        observe_rate_limit(&response);
         if let Some(error) = esi_limit_error(&response, "EVE bulk name lookup") {
             return Err(error);
         }
+        if !response.status().is_success() {
+            return Err(format!(
+                "EVE bulk name lookup failed (HTTP {})",
+                response.status().as_u16()
+            ));
+        }
         let response: Vec<UniverseName> = response
-            .error_for_status()
-            .map_err(|error| format!("EVE bulk name lookup failed: {error}"))?
             .json()
-            .map_err(|error| format!("EVE bulk name response invalid: {error}"))?;
+            .map_err(|_| "EVE bulk name response was invalid".to_string())?;
         names.extend(response.into_iter().map(|entry| (entry.id, entry.name)));
     }
     Ok(names)
@@ -273,5 +402,69 @@ fn apply_item_names(items: &mut [KillmailItem], names: &HashMap<u64, String>) {
             item.name.clone_from(name);
         }
         apply_item_names(&mut item.items, names);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::CharacterSource;
+
+    fn mail(source_ids: &[u64]) -> Killmail {
+        Killmail {
+            id: 42,
+            hash: "hash".into(),
+            sources: source_ids
+                .iter()
+                .map(|id| CharacterSource {
+                    id: *id,
+                    name: format!("Pilot {id}"),
+                })
+                .collect(),
+            victim_id: None,
+            victim_corporation_id: None,
+            victim: "Victim".into(),
+            ship: "Ship".into(),
+            time: "2026-01-01T00:00:00Z".into(),
+            estimated_value_isk: None,
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn failed_character_keeps_only_its_cached_source_membership() {
+        let mut refreshed = Vec::new();
+        retain_failed_character_cache(
+            &mut refreshed,
+            &[mail(&[1, 2])],
+            &HashSet::new(),
+            &[CharacterRefreshFailure {
+                character_id: 2,
+                character_name: "Pilot 2".into(),
+                error: "credential unavailable".into(),
+            }],
+        );
+
+        assert_eq!(refreshed.len(), 1);
+        assert_eq!(refreshed[0].sources.len(), 1);
+        assert_eq!(refreshed[0].sources[0].id, 2);
+    }
+
+    #[test]
+    fn failed_character_source_merges_into_fresh_shared_mail() {
+        let mut refreshed = vec![mail(&[1])];
+        retain_failed_character_cache(
+            &mut refreshed,
+            &[mail(&[1, 2])],
+            &HashSet::new(),
+            &[CharacterRefreshFailure {
+                character_id: 2,
+                character_name: "Pilot 2".into(),
+                error: "credential unavailable".into(),
+            }],
+        );
+
+        assert_eq!(refreshed.len(), 1);
+        assert_eq!(refreshed[0].sources.len(), 2);
     }
 }

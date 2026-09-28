@@ -2,25 +2,28 @@
 name = "ekmp"
 version = "0.2.0"
 edition = "2021"
-description = "A desktop utility for reviewing and explicitly publishing EVE Online killmails to zKillboard"
+description = "A CLI and optional desktop interface for explicitly publishing EVE Online killmails to zKillboard"
 license = "MIT"
 repository = "https://github.com/wims80/ekmp"
 rust-version = "1.97"
 
 [features]
-default = []
-dev-tools = ["eframe/inspection"]
+default = ["gui"]
+gui = ["dep:eframe", "dep:image", "egui_kittest/eframe"]
+dev-tools = ["eframe?/inspection"]
 
 [dependencies]
+clap = { version = "4", features = ["derive"] }
+ctrlc = "3"
 base64 = "0.23"
-eframe = { version = "0.36", default-features = false, features = [
+eframe = { version = "0.36", optional = true, default-features = false, features = [
     "default_fonts",
     "glow",
     "wayland",
     "x11",
 ] }
 httpdate = "1"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+image = { version = "0.25", optional = true, default-features = false, features = ["jpeg", "png"] }
 keyring = "4.1"
 open = "5"
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "gzip", "json", "rustls-tls"] }
@@ -31,5 +34,5 @@ serde_json = "1"
 sha2 = "0.11"
 
 [dev-dependencies]
-egui_kittest = { version = "0.36.1", features = ["eframe"] }
+egui_kittest = "0.36.1"
 httpmock = "0.8.3"

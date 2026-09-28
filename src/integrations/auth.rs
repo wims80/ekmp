@@ -20,7 +20,11 @@ const SCOPE: &str = "esi-killmails.read_killmails.v1";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-pub fn authenticate(cancelled: &AtomicBool) -> Result<Character, String> {
+pub fn authenticate(
+    cancelled: &AtomicBool,
+    open_browser: bool,
+    on_authorization_url: &dyn Fn(&str),
+) -> Result<Character, String> {
     let mut random = OsRng;
     let mut state_bytes = [0_u8; 32];
     let mut verifier_bytes = [0_u8; 32];
@@ -42,16 +46,24 @@ pub fn authenticate(cancelled: &AtomicBool) -> Result<Character, String> {
         .append_pair("code_challenge_method", "S256");
     let listener =
         TcpListener::bind("127.0.0.1:17842").map_err(|e| format!("Callback unavailable: {e}"))?;
-    open::that(url.as_str())
-        .map_err(|_| "Could not open browser; use the authorization URL manually".to_string())?;
+    on_authorization_url(url.as_str());
+    if open_browser {
+        open::that(url.as_str()).map_err(|_| {
+            "Could not open the browser; use --no-browser to open the authorization URL manually"
+                .to_string()
+        })?;
+    }
     let code = receive_callback(listener, &state, cancelled)?;
     if cancelled.load(Ordering::Relaxed) {
         return Err("Character connection cancelled".into());
     }
-    exchange_code(&verifier, &code)
+    exchange_code(&verifier, &code, cancelled)
 }
 
-pub fn access_token(c: &Character) -> Result<String, String> {
+pub fn access_token(
+    c: &mut Character,
+    on_character_updated: &mut dyn FnMut(&Character) -> Result<(), String>,
+) -> Result<String, String> {
     let refresh_token = match &c.refresh_token {
         Some(token) => token.clone(),
         None => secrets::load_refresh_token(c.id).map_err(|secure_error| {
@@ -60,7 +72,7 @@ pub fn access_token(c: &Character) -> Result<String, String> {
             )
         })?,
     };
-    let response = Client::new()
+    let response = http_client()?
         .post(format!("{SSO}/token"))
         .form(&[
             ("grant_type", "refresh_token"),
@@ -68,8 +80,20 @@ pub fn access_token(c: &Character) -> Result<String, String> {
             ("client_id", CLIENT_ID),
         ])
         .send()
-        .map_err(|e| format!("Token refresh failed: {e}"))?;
+        .map_err(|error| transport_error("Token refresh", &error))?;
     let token: Token = decode_response(response, "Token refresh")?;
+    if token.refresh_token != refresh_token {
+        if c.refresh_token.is_some() {
+            c.refresh_token = Some(token.refresh_token.clone());
+        } else if secrets::save_refresh_token(c.id, &token.refresh_token).is_err() {
+            // If the credential store became unavailable, preserve the rotated
+            // token through the normal private JSON fallback path.
+            c.refresh_token = Some(token.refresh_token.clone());
+        }
+        on_character_updated(c).map_err(|error| {
+            format!("Persistence failure while saving rotated credentials: {error}")
+        })?;
+    }
     Ok(token.access_token)
 }
 
@@ -143,8 +167,8 @@ fn check_callback_wait(cancelled: &AtomicBool, deadline: Instant) -> Result<(), 
     Ok(())
 }
 
-fn exchange_code(verifier: &str, code: &str) -> Result<Character, String> {
-    let response = Client::new()
+fn exchange_code(verifier: &str, code: &str, cancelled: &AtomicBool) -> Result<Character, String> {
+    let response = http_client()?
         .post(format!("{SSO}/token"))
         .form(&[
             ("grant_type", "authorization_code"),
@@ -153,13 +177,16 @@ fn exchange_code(verifier: &str, code: &str) -> Result<Character, String> {
             ("code_verifier", verifier),
         ])
         .send()
-        .map_err(|e| format!("Token request failed: {e}"))?;
+        .map_err(|error| transport_error("Token request", &error))?;
     let token: Token = decode_response(response, "Token request")?;
-    let response = Client::new()
+    if cancelled.load(Ordering::Relaxed) {
+        return Err("Character connection cancelled".into());
+    }
+    let response = http_client()?
         .get("https://login.eveonline.com/oauth/verify")
         .bearer_auth(token.access_token)
         .send()
-        .map_err(|e| format!("Character verification request failed: {e}"))?;
+        .map_err(|error| transport_error("Character verification request", &error))?;
     let verify: Verify = decode_response(response, "Character verification")?;
     Ok(Character {
         id: verify.character_id,
@@ -175,14 +202,31 @@ fn decode_response<T: for<'de> Deserialize<'de>>(
     operation: &str,
 ) -> Result<T, String> {
     let status = response.status();
-    let body = response
-        .text()
-        .map_err(|e| format!("{operation} response could not be read: {e}"))?;
     if !status.is_success() {
-        return Err(format!("{operation} failed ({status}): {body}"));
+        return Err(format!("{operation} failed ({status})"));
     }
-    serde_json::from_str(&body)
-        .map_err(|e| format!("{operation} returned invalid JSON ({e}): {body}"))
+    response
+        .json()
+        .map_err(|_| format!("{operation} returned an invalid response"))
+}
+
+fn http_client() -> Result<Client, String> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|_| "Could not configure the HTTP client".to_string())
+}
+
+fn transport_error(operation: &str, error: &reqwest::Error) -> String {
+    let reason = if error.is_timeout() {
+        "timed out"
+    } else if error.is_connect() {
+        "could not connect"
+    } else {
+        "transport failed"
+    };
+    format!("{operation} {reason}")
 }
 
 #[derive(Deserialize)]

@@ -23,6 +23,7 @@ pub(super) struct SidebarProps<'a> {
     pub(super) manually_protected_corporations: &'a [ProtectedVictim],
     pub(super) images: &'a HashMap<IdentityImageKey, IdentityImageState>,
     pub(super) latest_status: &'a str,
+    pub(super) refresh_status: &'a str,
     pub(super) status_history: &'a VecDeque<String>,
     pub(super) controls_enabled: bool,
     pub(super) persistence_enabled: bool,
@@ -357,6 +358,12 @@ fn activity(ui: &mut egui::Ui, props: &SidebarProps<'_>) {
             ui.set_width(ui.available_width());
             ui.label(egui::RichText::new("Current status").strong().color(ACCENT));
             ui.label(props.latest_status);
+            ui.add_space(6.0);
+            ui.label(
+                egui::RichText::new(props.refresh_status)
+                    .small()
+                    .color(MUTED),
+            );
             egui::CollapsingHeader::new(format!(
                 "Activity log - {} entries",
                 props.status_history.len()
@@ -408,6 +415,7 @@ mod tests {
                         manually_protected_corporations: &state.protected_corporations,
                         images: &state.images,
                         latest_status: "Ready",
+                        refresh_status: "Refresh has not run yet",
                         status_history: &state.status_history,
                         controls_enabled: true,
                         persistence_enabled: true,

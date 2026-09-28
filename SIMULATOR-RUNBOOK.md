@@ -10,8 +10,8 @@ agent performs an explicit individual or confirmed bulk action.
 Start one of the bundled scenarios:
 
 ```sh
-cargo run --features dev-tools -- --scenario mixed
-cargo run --features dev-tools -- --scenario errors
+cargo run --features dev-tools -- --scenario mixed gui
+cargo run --features dev-tools -- --scenario errors list
 ```
 
 The application displays a `SIMULATION` banner when isolation is active.
@@ -26,13 +26,19 @@ file:
 
 ```sh
 cargo run --features dev-tools -- \
-  --scenario mixed \
-  --dev-state target/ekmp-dev-state.json
+  --scenario mixed --dev-state target/ekmp-dev-state.json list
 ```
 
-Use the UI normally: refresh killmails, reveal protected killmails, protect additional victims,
-connect the synthetic character supplied by the scenario, and post individual or eligible bulk
-killmails. Simulated post results appear in the session-only results panel.
+Global development options precede the command: `--scenario NAME` and
+`--dev-state PATH` are followed by `gui`, `list`, `refresh`, `post`, or another
+CLI command. The simulator supports the same CLI workflow as the live program.
+For example, use `list --show-protected`, `refresh`, `protect add`, and `post
+ID --yes`; simulated post results appear in JSON command output or the GUI's
+session-only results panel.
+
+Use the GUI normally to reveal protected killmails, protect additional victims,
+connect the synthetic character supplied by the scenario, and post individual or
+eligible bulk killmails.
 
 ## Create a scenario
 
@@ -42,7 +48,7 @@ killmails. Simulated post results appear in the session-only results panel.
 3. Register the scenario name in the `load` match in `src/integrations/simulation.rs` using
    `include_str!`.
 4. Add the scenario name to the `bundled_scenarios_are_valid` test in that file.
-5. Run it with `cargo run --features dev-tools -- --scenario <name>`.
+5. Run it with `cargo run --features dev-tools -- --scenario <name> list`.
 6. Run `cargo test --all-features` to validate all bundled scenarios.
 
 Scenario fields:
@@ -101,7 +107,7 @@ codex mcp list
 Restart Codex after adding the server. Then launch an inspectable simulator in a separate terminal:
 
 ```sh
-EGUI_INSPECTION=1 cargo run --features dev-tools -- --scenario mixed
+EGUI_INSPECTION=1 cargo run --features dev-tools -- --scenario mixed gui
 ```
 
 Keep the application window visible when screenshots are needed. The semantic tree and input
@@ -131,7 +137,7 @@ which synthetic scenario and exact killmail IDs it may operate on, and require i
 
 ## Troubleshooting
 
-- If `--scenario` is rejected, include `--features dev-tools`.
+- If `--scenario` is rejected, include `--features dev-tools` and put it before the command.
 - If a scenario is unknown, register its name in `src/integrations/simulation.rs` and rebuild.
 - If inspection mode is rejected, include both `--features dev-tools` and `--scenario <name>`.
 - If an agent cannot attach, confirm the application is still running and that the `egui` MCP

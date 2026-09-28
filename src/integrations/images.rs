@@ -1,4 +1,5 @@
 use reqwest::{blocking::Client, header::USER_AGENT};
+use std::time::Duration;
 
 const IMAGE_SERVICE: &str = "https://images.evetech.net";
 const USER_AGENT_VALUE: &str = concat!(
@@ -53,16 +54,33 @@ impl IdentityImageKey {
 }
 
 pub(crate) fn fetch(key: IdentityImageKey) -> Result<Vec<u8>, String> {
-    Client::new()
+    let response = Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|_| "Could not configure the image HTTP client".to_string())?
         .get(key.url())
         .header(USER_AGENT, USER_AGENT_VALUE)
         .send()
-        .map_err(|error| format!("EVE image request failed: {error}"))?
-        .error_for_status()
-        .map_err(|error| format!("EVE image request failed: {error}"))?
+        .map_err(|error| {
+            if error.is_timeout() {
+                "EVE image request timed out".to_string()
+            } else if error.is_connect() {
+                "EVE image request could not connect".to_string()
+            } else {
+                "EVE image request transport failed".to_string()
+            }
+        })?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "EVE image request failed (HTTP {})",
+            response.status().as_u16()
+        ));
+    }
+    response
         .bytes()
         .map(|bytes| bytes.to_vec())
-        .map_err(|error| format!("EVE image response could not be read: {error}"))
+        .map_err(|_| "EVE image response could not be read".to_string())
 }
 
 #[cfg(test)]

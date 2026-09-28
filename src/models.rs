@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub const ZKILL_STATUS_CACHE_VERSION: u8 = 2;
+pub const DEFAULT_REFRESH_INTERVAL_SECS: u64 = 15 * 60;
 
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct Store {
     pub characters: Vec<Character>,
     #[serde(default)]
@@ -20,18 +20,96 @@ pub struct Store {
     pub manually_protected_corporations: Vec<ProtectedVictim>,
     #[serde(default)]
     pub manually_protected_killmail_ids: Vec<u64>,
+    #[serde(default = "default_refresh_interval_secs")]
+    pub refresh_interval_secs: u64,
+    #[serde(default)]
+    pub refresh_schedule: RefreshSchedule,
+    #[serde(default)]
+    pub api_cooldowns: Vec<ApiCooldown>,
+    #[serde(default)]
+    pub zkill_valid_until: HashMap<u64, u64>,
+    #[serde(default)]
+    pub post_attempts: HashMap<u64, PostAttempt>,
+    #[serde(default)]
+    pub zkill_query_cache: HashMap<String, ZkillQueryCacheEntry>,
+    #[serde(default)]
+    pub zkill_next_request_at_ms: u64,
+}
+
+impl Default for Store {
+    fn default() -> Self {
+        Self {
+            characters: Vec::new(),
+            zkill_cache: HashMap::new(),
+            zkill_status_cache_version: 0,
+            show_protected_killmails: false,
+            cached_killmails: Vec::new(),
+            manually_protected_characters: Vec::new(),
+            manually_protected_corporations: Vec::new(),
+            manually_protected_killmail_ids: Vec::new(),
+            refresh_interval_secs: DEFAULT_REFRESH_INTERVAL_SECS,
+            refresh_schedule: RefreshSchedule::default(),
+            api_cooldowns: Vec::new(),
+            zkill_valid_until: HashMap::new(),
+            post_attempts: HashMap::new(),
+            zkill_query_cache: HashMap::new(),
+            zkill_next_request_at_ms: 0,
+        }
+    }
+}
+
+const fn default_refresh_interval_secs() -> u64 {
+    DEFAULT_REFRESH_INTERVAL_SECS
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RefreshSchedule {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_attempt_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_success_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_completed_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_eligible_at: Option<u64>,
+    #[serde(default)]
+    pub consecutive_failures: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ApiCooldown {
+    pub source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    pub until: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PostAttempt {
+    pub attempted_at: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ZkillQueryCacheEntry {
+    pub entries: Vec<ZkillQueryKillmail>,
+    pub observed_at: u64,
+    pub valid_until: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ZkillQueryKillmail {
+    pub id: u64,
+    pub time: String,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct ZkillCacheEntry {
     pub reported: bool,
     pub checked_at: u64,
-}
-
-impl ZkillCacheEntry {
-    pub fn is_fresh(self, now: u64, negative_ttl: u64) -> bool {
-        self.reported || now.saturating_sub(self.checked_at) < negative_ttl
-    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -64,7 +142,7 @@ pub enum ProtectedVictimKind {
     Corporation,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Killmail {
     pub id: u64,
     pub hash: String,
@@ -186,29 +264,10 @@ mod tests {
         assert!(store.manually_protected_characters.is_empty());
         assert!(store.manually_protected_corporations.is_empty());
         assert!(store.manually_protected_killmail_ids.is_empty());
+        assert_eq!(store.refresh_interval_secs, DEFAULT_REFRESH_INTERVAL_SECS);
+        assert!(store.post_attempts.is_empty());
         assert_eq!(store.characters[0].refresh_token.as_deref(), Some("token"));
         assert_eq!(store.characters[0].corporation_id, None);
-    }
-
-    #[test]
-    fn positive_cache_entries_do_not_expire() {
-        let entry = ZkillCacheEntry {
-            reported: true,
-            checked_at: 1,
-        };
-
-        assert!(entry.is_fresh(u64::MAX, 900));
-    }
-
-    #[test]
-    fn negative_cache_entries_expire_at_the_ttl() {
-        let entry = ZkillCacheEntry {
-            reported: false,
-            checked_at: 100,
-        };
-
-        assert!(entry.is_fresh(999, 900));
-        assert!(!entry.is_fresh(1_000, 900));
     }
 
     #[test]

@@ -19,15 +19,31 @@ jobs:
       - run: cargo +1.97.1 fmt --check
 
   verify:
-    name: Verify (${{ matrix.os }})
+    name: Verify (${{ matrix.os }}, ${{ matrix.profile }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, windows-2022]
+        profile: [gui, cli]
     steps:
       - uses: actions/checkout@v7
       - run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
-      - run: cargo +1.97.1 check --locked
-      - run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo +1.97.1 test --locked --all-features
+      - name: Check GUI build
+        if: matrix.profile == 'gui'
+        run: cargo +1.97.1 check --locked
+      - name: Lint GUI build
+        if: matrix.profile == 'gui'
+        run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
+      - name: Test GUI build
+        if: matrix.profile == 'gui'
+        run: cargo +1.97.1 test --locked --all-features
+      - name: Check CLI-only build
+        if: matrix.profile == 'cli'
+        run: cargo +1.97.1 check --locked --no-default-features
+      - name: Lint CLI-only build
+        if: matrix.profile == 'cli'
+        run: cargo +1.97.1 clippy --locked --no-default-features --all-targets -- -D warnings
+      - name: Test CLI-only simulator
+        if: matrix.profile == 'cli'
+        run: cargo +1.97.1 test --locked --no-default-features --features dev-tools

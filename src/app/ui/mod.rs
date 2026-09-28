@@ -1,6 +1,5 @@
 use super::{
-    worker::{unix_time, IdentityImageKey},
-    App, IdentityImageState, SessionReportStatus, SubmissionMode,
+    unix_time, worker::IdentityImageKey, App, IdentityImageState, PendingCharacterRemoval,
 };
 use crate::{
     killmail::{displayed_killmails, is_bulk_candidate, posting_summary, ReportState},
@@ -103,9 +102,29 @@ impl App {
                 "A refresh token is stored in ekmp.json because the system credential store was unavailable.",
             );
         }
+        if let Some(error) = &self.core_status.last_error {
+            notice(
+                ui,
+                WARNING,
+                "LAST REFRESH FAILED",
+                &format!("Cached data remains available. {error}"),
+            );
+        }
+        if let Some(url) = &self.authorization_url {
+            egui::Frame::new()
+                .fill(ACCENT.gamma_multiply(0.12))
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label("Complete EVE authorization in your browser.");
+                        ui.hyperlink_to("Open authorization page", url);
+                    });
+                });
+        }
     }
 
     fn show_sidebar(&mut self, ui: &mut egui::Ui) {
+        let refresh_status = self.refresh_status_text();
         let image_keys = self
             .store
             .characters
@@ -131,6 +150,7 @@ impl App {
                 manually_protected_corporations: &self.store.manually_protected_corporations,
                 images: &self.identity_images,
                 latest_status: &self.latest_status,
+                refresh_status: &refresh_status,
                 status_history: &self.status_history,
                 controls_enabled,
                 persistence_enabled: self.persistence_blocked.is_none(),
@@ -149,22 +169,14 @@ impl App {
                     .characters
                     .iter()
                     .find(|character| character.id == id)
-                    .cloned();
+                    .map(|character| PendingCharacterRemoval {
+                        id: character.id,
+                        name: character.name.clone(),
+                    });
             }
             Some(SidebarAction::AddProtectedVictim) => self.begin_add_protected_victim(),
             Some(SidebarAction::RemoveProtectedVictim(kind, id)) => {
-                match kind {
-                    ProtectedVictimKind::Character => self
-                        .store
-                        .manually_protected_characters
-                        .retain(|entry| entry.id != id),
-                    ProtectedVictimKind::Corporation => self
-                        .store
-                        .manually_protected_corporations
-                        .retain(|entry| entry.id != id),
-                }
-                self.persist_or_log_error();
-                self.log(format!("Removed protected victim with EVE ID {id}"));
+                self.remove_protected_victim(kind, id);
             }
             None => {}
         }
@@ -255,17 +267,15 @@ impl App {
                             self.request_bulk_post();
                         }
 
+                        let mut show_protected = self.store.show_protected_killmails;
                         let changed = ui
-                            .add_enabled_ui(self.persistence_blocked.is_none(), |ui| {
-                                ui.checkbox(
-                                    &mut self.store.show_protected_killmails,
-                                    "Show protected killmails",
-                                )
-                                .changed()
+                            .add_enabled_ui(self.persisted_controls_enabled(), |ui| {
+                                ui.checkbox(&mut show_protected, "Show protected killmails")
+                                    .changed()
                             })
                             .inner;
                         if changed {
-                            self.persist_or_log_error();
+                            self.set_show_protected(show_protected);
                         }
                     });
                 });
@@ -310,7 +320,7 @@ impl App {
             return;
         }
 
-        let mut post_mail = None;
+        let mut post_request = None;
         let mut toggle_protection = None;
         let card_context = KillmailCardContext {
             store: &self.store,
@@ -326,7 +336,7 @@ impl App {
                 &card_context,
                 mail,
                 expanded,
-                &mut post_mail,
+                &mut post_request,
                 &mut toggle_protection,
             ) {
                 self.expanded_killmail_ids.insert(mail.id);
@@ -335,26 +345,15 @@ impl App {
             }
             ui.add_space(6.0);
         }
-        if let Some(mail) = post_mail {
-            self.start_posts(vec![mail], SubmissionMode::Individual);
+        if let Some((id, post_anyway)) = post_request {
+            self.request_individual_post(id, post_anyway);
         }
         if let Some(killmail_id) = toggle_protection {
-            if let Some(index) = self
+            let protected = !self
                 .store
                 .manually_protected_killmail_ids
-                .iter()
-                .position(|id| *id == killmail_id)
-            {
-                self.store.manually_protected_killmail_ids.remove(index);
-                self.persist_or_log_error();
-                self.log(format!(
-                    "Removed protection flag from killmail {killmail_id}"
-                ));
-            } else {
-                self.store.manually_protected_killmail_ids.push(killmail_id);
-                self.persist_or_log_error();
-                self.log(format!("Flagged killmail {killmail_id} for protection"));
-            }
+                .contains(&killmail_id);
+            self.set_killmail_protection(killmail_id, protected);
         }
     }
 
@@ -373,9 +372,10 @@ impl App {
                 ui.set_width(ui.available_width());
                 for report in &self.session_reports {
                     ui.horizontal(|ui| {
-                        let status = match report.status {
-                            SessionReportStatus::Submitted => "Submitted",
-                            SessionReportStatus::AlreadyPresent => "Already on zKillboard",
+                        let status = if report.new {
+                            "Submitted"
+                        } else {
+                            "Already on zKillboard"
                         };
                         ui.label(egui::RichText::new("OK").small().color(SUCCESS));
                         ui.label(format!("Killmail {} - {status}", report.killmail_id));
@@ -391,31 +391,50 @@ impl App {
             });
     }
 
-    fn show_bulk_confirmation(&mut self, ctx: &egui::Context) {
-        let Some(count) = self.pending_bulk.as_ref().map(Vec::len) else {
+    fn show_post_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(prepared) = self.pending_post.as_ref() else {
             return;
         };
-        let heading = format!("Post {count} eligible killmails?");
+        let count = prepared.ids.len();
+        let bulk = prepared.mode == crate::core::PostMode::Bulk;
+        let protected = prepared.mode == crate::core::PostMode::ProtectedIndividual;
+        let heading = if bulk {
+            format!("Post {count} eligible killmails?")
+        } else if protected {
+            format!("Post protected killmail {} anyway?", prepared.ids[0])
+        } else {
+            format!("Post killmail {}?", prepared.ids[0])
+        };
         match confirmation_dialog(
             ctx,
             ConfirmationDialog {
-                window_title: "Confirm bulk posting",
+                window_title: "Confirm posting",
                 heading: &heading,
-                message: "Each killmail was confirmed as unreported. Protected victims are excluded and eligibility is checked again before posting.",
+                message: if bulk {
+                    "Each killmail was confirmed as unreported. Protected victims are excluded and every ID is checked again immediately before posting."
+                } else if protected {
+                    "This protected victim was confirmed as unreported. Protection and reporting status are checked again immediately before posting."
+                } else {
+                    "This killmail was confirmed as unreported. Its reporting status is checked again immediately before posting."
+                },
                 confirm_label: "Post to zKillboard",
-                confirm_accessible_label: "Confirm bulk post",
+                confirm_accessible_label: if bulk {
+                    "Confirm bulk post"
+                } else {
+                    "Confirm individual post"
+                },
                 confirm_color: ACCENT_DARK,
                 min_width: 390.0,
             },
         ) {
             ConfirmationAction::Confirmed => {
-                if let Some(mails) = self.pending_bulk.take() {
-                    self.start_posts(mails, SubmissionMode::Bulk);
+                if let Some(prepared) = self.pending_post.take() {
+                    self.post_prepared(prepared);
                 }
             }
             ConfirmationAction::Cancelled => {
-                self.pending_bulk = None;
-                self.log("Bulk submission cancelled");
+                self.pending_post = None;
+                self.log("Submission cancelled");
             }
             ConfirmationAction::None => {}
         }
@@ -442,7 +461,7 @@ impl App {
         ) {
             ConfirmationAction::Confirmed => {
                 if let Some(character) = self.pending_character_removal.take() {
-                    self.remove_character(character);
+                    self.remove_character(character.id);
                 }
             }
             ConfirmationAction::Cancelled => {
@@ -456,10 +475,12 @@ impl App {
 
 impl eframe::App for App {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.poll_worker();
+        self.poll_core();
         self.poll_identity_images(ctx);
-        if self.is_busy() || self.identity_images_loading() {
+        if self.is_busy() || self.snapshot_result.is_some() || self.identity_images_loading() {
             ctx.request_repaint_after(Duration::from_millis(100));
+        } else {
+            ctx.request_repaint_after(super::SNAPSHOT_POLL_INTERVAL);
         }
     }
 
@@ -501,7 +522,7 @@ impl eframe::App for App {
                         self.show_review_workspace(ui);
                     });
             });
-        self.show_bulk_confirmation(&ctx);
+        self.show_post_confirmation(&ctx);
         self.show_character_removal_confirmation(&ctx);
         if self.identity_images_loading() {
             ctx.request_repaint_after(Duration::from_millis(100));
@@ -634,6 +655,10 @@ mod tests {
         harness.run_steps(2);
         harness.get_by_label("Post killmail 9001").click_accesskit();
         harness.run_steps(4);
+        harness
+            .get_by_label("Confirm individual post")
+            .click_accesskit();
+        harness.run_steps(4);
 
         assert_eq!(backend.posted_ids(), vec![9001]);
         assert!(harness
@@ -662,7 +687,7 @@ mod tests {
         assert!(harness.query_by_label("Eligible Example").is_none());
         assert!(harness.query_by_label("Post eligible (1)").is_some());
 
-        harness.state_mut().store.show_protected_killmails = true;
+        harness.state_mut().set_show_protected(true);
         harness.run_steps(2);
         assert!(harness
             .query_by_label_contains("killmail flagged for protection")
@@ -687,14 +712,79 @@ mod tests {
         harness.get_by_label("Post eligible (2)").click_accesskit();
         harness.run_steps(2);
 
-        harness
-            .state_mut()
-            .store
-            .manually_protected_killmail_ids
-            .push(9006);
+        harness.state_mut().set_killmail_protection(9006, true);
+        harness.run_steps(2);
         harness.get_by_label("Confirm bulk post").click_accesskit();
         harness.run_steps(4);
 
         assert_eq!(backend.posted_ids(), vec![9001]);
+    }
+
+    #[test]
+    fn protected_individual_requires_post_anyway_and_confirmation() {
+        let (mut harness, backend) = mixed_harness();
+        harness.run_steps(4);
+        harness.state_mut().set_show_protected(true);
+        harness.run_steps(2);
+        harness
+            .get_by_label("Expand killmail 9002")
+            .click_accesskit();
+        harness.run_steps(2);
+
+        harness
+            .get_by_label("Post protected killmail 9002 anyway")
+            .click_accesskit();
+        harness.run_steps(4);
+        assert!(backend.posted_ids().is_empty());
+
+        harness
+            .get_by_label("Confirm individual post")
+            .click_accesskit();
+        harness.run_steps(4);
+
+        assert_eq!(backend.posted_ids(), vec![9002]);
+    }
+
+    #[test]
+    fn first_character_authentication_refreshes_after_the_new_snapshot_arrives() {
+        let loaded = simulation::load("mixed").unwrap();
+        let backend = Arc::new(loaded.backend);
+        let mut store = loaded.store;
+        store.characters.clear();
+        store.cached_killmails.clear();
+        let app = App::simulated(store, backend, loaded.name, None, true);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1180.0, 760.0))
+            .build_eframe(move |_| app);
+
+        harness
+            .get_by_label("+  Connect another character")
+            .click_accesskit();
+        harness.run_steps(8);
+
+        assert!(harness
+            .state()
+            .store
+            .characters
+            .iter()
+            .any(|character| character.id == 1002));
+        assert!(!harness.state().store.cached_killmails.is_empty());
+    }
+
+    #[test]
+    fn startup_migrates_json_credentials_before_refreshing() {
+        let loaded = simulation::load("mixed").unwrap();
+        let backend = Arc::new(loaded.backend);
+        let mut store = loaded.store;
+        store.characters[0].refresh_token = Some("simulation-refresh-token".into());
+        let app = App::simulated(store, backend, loaded.name, None, true);
+        let mut harness = Harness::builder()
+            .with_size(egui::vec2(1180.0, 760.0))
+            .build_eframe(move |_| app);
+
+        harness.run_steps(8);
+
+        assert!(harness.state().store.characters[0].refresh_token.is_none());
+        assert!(!harness.state().store.cached_killmails.is_empty());
     }
 }

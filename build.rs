@@ -9,7 +9,9 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/windows/ekmp.rc");
     println!("cargo:rerun-if-changed=assets/windows/app-icon.ico");
 
-    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows")
+        || env::var_os("CARGO_FEATURE_GUI").is_none()
+    {
         return;
     }
 

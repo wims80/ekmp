@@ -1,224 +1,118 @@
 # EVE Killmail Publisher
 
-EVE Killmail Publisher (`ekmp`) is a Rust desktop utility for reviewing EVE Online character killmails
-and explicitly submitting selected killmails to zKillboard.
+EVE Killmail Publisher (`ekmp`) reviews EVE Online killmails and explicitly submits selected killmails to zKillboard. It is CLI-first and includes an optional desktop interface in normal releases.
 
-## Current Features
+Killmails are never submitted automatically. Authenticated characters and their corporations are protected victims automatically. Manually protected victims are hidden by default, excluded from bulk posting, and can only be sent through an explicit individual `Post anyway` action.
 
-- EVE SSO PKCE authentication with the `esi-killmails.read_killmails.v1` scope
-- Multiple authenticated characters
-- Locally cached EVE portraits, organization logos, ship renders, and item icons
-- Removal of authenticated characters, their stored refresh tokens, and their
-  unshared cached killmails
-- Automatic recent killmail refresh from ESI at application startup, with
-  manual refresh available afterward
-- Cached zKillboard reporting status for each eligible killmail, refreshed from
-  the relevant paginated zKillboard feed for unknown entries at startup
-- Session-only results for explicitly submitted killmails, with zKillboard links
-- Configurable protected victim characters and corporations excluded from bulk posting
-- Persisted protection flags for individual killmails
-- A posting summary showing bulk-eligible, protected, and still-unchecked killmails
-- A separate `Post to zKillboard` button for each killmail still confirmed as
-  unreported, revealed by expanding its compact killmail card
-- Confirmed bulk submission of all unreported killmails
-- A review-focused dashboard with connected characters and protection controls
-  beside a status summary and compact killmail cards with estimated ISK values
-- Rich expanded killmail cards with victim and location context, independently
-  scrollable aggressor and fitting/content panes, final-blow and top-damage
-  identification, item quantities, and dropped/destroyed outcomes
-- An expanded activity log that identifies characters, killmail IDs, source
-  counts, and zKillboard status-check outcomes
+## Command line
 
-Killmails are never submitted automatically.
+Running `ekmp` with no arguments displays help. `--json` produces structured results on stdout; prompts, progress, and diagnostics use stderr.
 
-Authenticated characters and their corporations are automatically protected.
-Additional victim characters and corporations can be added by exact EVE name
-or numeric ID under `Protected victims`. An individual killmail can also be
-flagged or unflagged from its expanded card. Protection flags persist across
-restarts and refreshes until removed or until the killmail is reported.
-Protected killmails are excluded from bulk submission but, while confirmed as
-unreported, can still be submitted individually with the explicit `Post anyway`
-button. They are hidden from the recent-killmail list by default and can be
-displayed with the persisted `Show protected killmails` checkbox.
+```sh
+ekmp characters add
+ekmp refresh
+ekmp list
+ekmp show KILLMAIL_ID
+ekmp post KILLMAIL_ID
+```
+
+Use `ekmp gui` to open the desktop interface. The remaining commands are:
+
+| Command | Purpose |
+| --- | --- |
+| `characters list` | List authenticated characters. |
+| `characters add [--no-browser]` | Authenticate with same-machine PKCE. `--no-browser` prints the authorization URL. |
+| `characters remove ID [--yes]` | Remove a character, its credentials, and unshared cached killmails after confirmation. |
+| `refresh` | Refresh recent killmails and reporting statuses. |
+| `list` / `show ID` | Read cached killmails without network requests. |
+| `post ID [--post-anyway] [--yes]` | Explicitly post one confirmed-unreported killmail. Protected victims require `--post-anyway`. |
+| `post --all [--yes]` | Post only confirmed, still eligible killmails. Protected victims are never included. |
+| `protect list/add/remove` | Manage character, corporation, and individual-killmail protection. |
+| `config get/set` | Manage `refresh-interval` and `show-protected-killmails`. |
+| `service run [--interval 15m]` | Run the optional foreground refresh service. |
+| `status` | Display cached counts, refresh timing, service state, and API cooldowns. |
+
+Lists use the saved protected-visibility preference. `--show-protected` and `--hide-protected` override it for one invocation. `post` verifies reporting status before confirmation. Noninteractive post and removal operations require `--yes`; they fail rather than prompting when no terminal is available.
+
+The refresh service performs refreshes only: it never posts, opens a browser, or initiates authentication. Its default interval is 15 minutes after a cycle finishes; `--interval` overrides that process only. Concurrent foreground work returns busy instead of waiting silently.
 
 ## Installation
 
-Download the archive for your operating system from the
-[GitHub Releases](https://github.com/wims80/ekmp/releases) page. The initial
-release supports x86-64 Linux systems with glibc 2.35 or newer and x86-64
-Windows 10 or newer. macOS and Linux ARM64 are not supported.
+Download the archive for your operating system from [GitHub Releases](https://github.com/wims80/ekmp/releases). Initial releases support x86-64 Linux with glibc 2.35 or newer and x86-64 Windows 10 or newer.
 
 ### Linux
 
-Extract `ekmp-*-x86_64-unknown-linux-gnu.tar.gz`, enter the extracted
-directory, and run:
+Extract `ekmp-*-x86_64-unknown-linux-gnu.tar.gz`, enter it, and run:
 
 ```sh
 ./install.sh
 ```
 
-This installs `ekmp` in `~/.local/bin`, a launcher in
-`~/.local/share/applications`, and its icon in the matching `hicolor` icon
-directory. The launcher works with GNOME, KDE, and other desktops that follow
-the freedesktop desktop-entry standard. To remove the installed program while
-keeping your settings and cached data, run `./install.sh --uninstall` from the
-same release archive.
+This installs `ekmp` in `~/.local/bin`, a desktop launcher, and its icon for the current user. The desktop launcher runs `ekmp gui`; invoke `ekmp` directly for the CLI. Remove the program, launcher, and icon with `./install.sh --uninstall`; settings and caches remain in place.
 
-You can also run the extracted `ekmp` executable directly; installing it is
-only needed for an application-menu and taskbar icon.
+The archive contains an opt-in `ekmp-refresh.service` template. To enable the refresh service for the authenticated user:
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp ekmp-refresh.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now ekmp-refresh.service
+```
+
+It expects `ekmp` in `~/.local/bin`. Installation never enables the service. Remove it with `systemctl --user disable --now ekmp-refresh.service` and `rm ~/.config/systemd/user/ekmp-refresh.service`.
 
 ### Windows
 
-Extract `ekmp-*-x86_64-pc-windows-msvc.zip` and run `ekmp.exe`. Windows may
-show a SmartScreen warning because the executable is not code signed. Verify
-the archive against the `SHA256SUMS` file attached to the same release before
-running it.
+Extract `ekmp-*-x86_64-pc-windows-msvc.zip`. Run `launch-gui.cmd` for the desktop interface or `ekmp.exe` in PowerShell or Command Prompt for the CLI. Windows may show a SmartScreen warning because the executable is not code signed; compare the archive with the release `SHA256SUMS` first.
 
-### Authentication and local data
+The refresh service is opt-in. From an interactive PowerShell session under the same Windows account that authenticated the characters, in the extracted release directory:
 
-The release already contains the EVE client ID and the required loopback
-callback registration. Users do not need to create an EVE developer
-application and must never enter, request, or share a client secret.
+```powershell
+$action = New-ScheduledTaskAction -Execute (Join-Path $PWD 'ekmp.exe') -Argument 'service run'
+$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+Register-ScheduledTask -TaskName 'EVE Killmail Publisher Refresh' -Action $action -Trigger $trigger -Description 'Refreshes cached EVE data; never posts killmails.'
+```
 
-After starting the application, authenticate one or more characters and use an
-individual post button when desired. On later starts, recent killmails refresh
-automatically after cached zKillboard statuses are checked.
-An in-progress character connection can be cancelled from the application and
-times out after five minutes if the browser authorization is abandoned.
+Remove it with `Unregister-ScheduledTask -TaskName 'EVE Killmail Publisher Refresh'`. Do not choose a different account or elevated task: credentials and local state belong to the authenticated user. No service is created automatically.
 
-The local configuration is stored in `~/.config/ekmp/ekmp.json` on Linux and
-`%APPDATA%\ekmp\ekmp.json` on Windows. It contains application preferences, a
-local snapshot of the most recently loaded killmails, individual killmail
-protection flags, and the zKillboard status cache. The snapshot is displayed
-immediately on the next startup. Full killmail records already reported to
-zKillboard are removed from the snapshot; only their compact status-cache
-entries are retained. Unreported results are checked again after 15 minutes.
-Matching unreported killmail snapshots are reused during refresh so their full
-ESI detail is not downloaded repeatedly.
+## Authentication, data, and caches
 
-Character portraits, corporation and alliance logos, ship renders, and item
-icons from the EVE image service are loaded when needed and cached separately in
-`~/.cache/ekmp/images` on Linux (or `$XDG_CACHE_HOME/ekmp/images` when set) and
-`%LOCALAPPDATA%\ekmp\images` on Windows. Cached images are refreshed after seven
-days, with stale images retained as an offline fallback.
+The release contains the public EVE client ID and loopback callback registration. Users must never create, enter, request, or share a client secret. PKCE refresh tokens use the operating-system credential store when possible; a fallback token in `ekmp.json` makes that file sensitive.
 
-Cacheable ESI GET responses are stored separately in a bounded SQLite cache:
-`~/.cache/ekmp/esi-cache.sqlite3` on Linux (or
-`$XDG_CACHE_HOME/ekmp/esi-cache.sqlite3`) and
-`%LOCALAPPDATA%\ekmp\esi-cache.sqlite3` on Windows. The cache follows ESI's
-`Expires` and `ETag` headers, revalidating expired data conditionally. Full
-killmail-detail responses are deliberately excluded so reported killmail
-records are never retained there. Entity/type names are deduplicated and
-resolved in bulk during refresh; system, constellation, region, and market-price
-lookups use the HTTP cache. Displayed ISK totals use ESI average prices with
-adjusted prices as a fallback and are estimates rather than live market quotes.
+State is stored in `~/.config/ekmp/ekmp.json` on Linux and `%APPDATA%\ekmp\ekmp.json` on Windows. It holds preferences, cached unreported killmails, individual protection flags, compact reported-ID information, and scheduling metadata. Full reported killmail records and session-only successful submission results are not persisted. Portraits and public images use a separate image cache; cacheable ESI GET responses use a separate SQLite cache.
 
-Configuration updates are written through a temporary file before replacing
-the previous file. On Unix, the file is restricted to the current user. If the
-existing configuration cannot be read or parsed, the application displays an
-error and disables saving for that session rather than overwriting it.
-
-OAuth refresh tokens are stored in the operating system credential store:
-Secret Service on Linux (GNOME Keyring or KDE/KWallet), Keychain on macOS, and
-Credential Manager on Windows. Linux requires an unlocked Secret Service
-provider; macOS and Windows provide their credential stores as part of the
-operating system. If the credential store is unavailable or fails on any
-platform, the application falls back to storing the affected refresh token in
-`ekmp.json` and displays a persistent security warning. Treat that file as
-sensitive whenever the warning is present. PKCE means a client secret is never
-needed or stored by this desktop application.
-
-Do not attach `ekmp.json`, refresh tokens, authorization URLs, or killmail
-hashes to public issue reports. Use GitHub's private vulnerability reporting
-for security-sensitive reports.
-
-## Support and contributions
-
-Report reproducible bugs through [GitHub Issues](https://github.com/wims80/ekmp/issues).
-Pull requests are welcome for review, but the repository has a single
-maintainer and does not grant write access to outside contributors.
-
-## EVE notice
-
-© 2026 Fenris Creations. All rights reserved. EVE Online® and Fenris
-Creations™ and all related logos and other elements are trademarks of Fenris
-Creations. EVE Killmail Publisher is an independent, non-commercial
-third-party tool and is not affiliated with or endorsed by Fenris Creations.
+Do not attach `ekmp.json`, refresh tokens, authorization URLs, or killmail hashes to public issue reports.
 
 ## Development
 
+Normal builds include the GUI:
+
 ```sh
-cargo run
-cargo test
+cargo run -- gui
+cargo test --all-features
+```
+
+CLI-only builds omit eframe and image decoding and work without a display:
+
+```sh
+cargo build --no-default-features
+./target/debug/ekmp --help
 ```
 
 ### Offline simulation
 
-Development builds can run against synthetic data without authenticating with EVE or contacting
-ESI, the EVE image service, the system credential store, or zKillboard:
+The `dev-tools` feature uses compiled-in synthetic data and cannot contact EVE, zKillboard, the image service, or a credential store. Global development flags precede the command:
 
 ```sh
-cargo run --features dev-tools -- --scenario mixed
-cargo run --features dev-tools -- --scenario errors
+cargo run --features dev-tools -- --scenario mixed gui
+cargo run --features dev-tools -- --scenario errors list
+cargo run --features dev-tools -- --scenario mixed --dev-state target/ekmp-dev-state.json list
 ```
 
-The `mixed` scenario covers eligible, protected, already reported, and shared-source killmails, plus
-a detailed fitting, nested cargo, player attackers, and an NPC attacker for expanded-card testing. The
-`errors` scenario contains a confirmed-unreported killmail whose simulated submission fails. Each
-run starts from its fixture and keeps changes in memory. To debug persistence separately, provide an
-explicit development-only state file:
+The simulator preserves the same explicit submission policy as live operation. Scenario fixtures are in `dev/scenarios/`; they must contain invented IDs, hashes, names, and outcomes. See [SIMULATOR-RUNBOOK.md](SIMULATOR-RUNBOOK.md).
 
-```sh
-cargo run --features dev-tools -- --scenario mixed --dev-state target/ekmp-dev-state.json
-```
+`EGUI_INSPECTION=1` is available only in a dev-tools GUI build and only with a simulation scenario; it is rejected for live runs.
 
-Simulation is compile-time opt-in, displays a visible banner, uses zero request spacing, and cannot
-fall through to the live integrations. Its submission results are recorded in memory and still
-require the same explicit individual or confirmed bulk actions as production. Scenario definitions
-live in `dev/scenarios/` and must contain only invented IDs, hashes, names, and outcomes.
-See [SIMULATOR-RUNBOOK.md](SIMULATOR-RUNBOOK.md) for manual workflows, scenario authoring, and
-agent-driven UI testing.
+## EVE notice
 
-### Agent-driven UI testing
-
-The `dev-tools` feature enables eframe's AccessKit inspection support. Install and configure the
-`egui_mcp` MCP server for the development agent, then launch an inspectable simulator:
-
-```sh
-cargo install --locked egui_mcp
-EGUI_INSPECTION=1 cargo run --features dev-tools -- --scenario mixed
-```
-
-An agent can inspect the semantic UI tree, activate uniquely labelled controls, enter protected
-victim data, and capture screenshots without relying on screen coordinates. For safety, the
-application refuses to start with `EGUI_INSPECTION` enabled unless a simulator scenario was also
-selected. Repeatable headless UI workflows use `egui_kittest` and run as part of
-`cargo test --all-features`.
-
-The real HTTP adapters are tested against short-lived localhost `httpmock` servers. No standalone
-mock service or database is required.
-
-### Windows
-
-Install Rust with the default `x86_64-pc-windows-msvc` toolchain and install
-the Visual Studio Build Tools with the **Desktop development with C++**
-workload, including a Windows SDK. The build automatically locates the Windows
-SDK resource compiler when it is not already on `PATH`:
-
-```powershell
-cargo run
-cargo build --release
-```
-
-The release executable is `target\release\ekmp.exe`. The build embeds
-`assets/windows/app-icon.ico` as its executable icon; the running window uses
-the embedded PNG icon. Windows settings and cached state are saved beneath
-`%APPDATA%\ekmp`.
-
-To verify Windows Credential Manager without using an EVE refresh token, run
-the opt-in integration test from an interactive, signed-in PowerShell session.
-It creates one temporary credential and deletes it before exiting:
-
-```powershell
-cargo test --all-features windows_credential_manager_round_trip -- --ignored
-```
+© 2026 Fenris Creations. All rights reserved. EVE Online® and Fenris Creations™ and all related logos and other elements are trademarks of Fenris Creations. EVE Killmail Publisher is an independent, non-commercial third-party tool and is not affiliated with or endorsed by Fenris Creations.

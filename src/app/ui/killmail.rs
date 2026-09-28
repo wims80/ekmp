@@ -21,7 +21,7 @@ pub(super) fn killmail_card(
     context: &KillmailCardContext<'_>,
     mail: &Killmail,
     mut expanded: bool,
-    post_mail: &mut Option<Killmail>,
+    post_request: &mut Option<(u64, bool)>,
     toggle_protection: &mut Option<u64>,
 ) -> bool {
     let protection_reasons = protection_reasons(context.store, mail);
@@ -124,7 +124,7 @@ pub(super) fn killmail_card(
                             accessible_label,
                         );
                         if response.clicked() {
-                            *post_mail = Some(mail.clone());
+                            *post_request = Some((mail.id, protected));
                         }
                     }
 

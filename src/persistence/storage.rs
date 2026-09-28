@@ -7,25 +7,97 @@ use std::{
 
 const CONFIG_DIR_NAME: &str = "ekmp";
 const STORE_FILE_NAME: &str = "ekmp.json";
+const OPERATION_LOCK_SUFFIX: &str = "lock";
+const SERVICE_LOCK_SUFFIX: &str = "service.lock";
 
-pub fn persist(store: &Store) -> Result<(), String> {
-    let path = store_path()?;
-    let data = serde_json::to_vec_pretty(store).map_err(|error| error.to_string())?;
-    persist_to_path(&path, &data)
-        .map_err(|error| format!("could not atomically write {}: {error}", path.display()))
+#[derive(Debug)]
+pub(crate) enum LockError {
+    Busy,
+    Io(String),
 }
 
-pub fn load() -> Result<Store, String> {
-    let path = store_path()?;
-    load_from_path(&path)
+pub(crate) struct OperationLock {
+    _file: fs::File,
+}
+
+pub(crate) struct SnapshotLock {
+    _file: fs::File,
+}
+
+pub(crate) struct ServiceLock {
+    _file: fs::File,
+}
+
+pub(crate) fn try_operation_lock_for(path: &Path) -> Result<OperationLock, LockError> {
+    let file = open_lock_file(&sibling_path(path, OPERATION_LOCK_SUFFIX))?;
+    file.try_lock().map_err(map_lock_error)?;
+    Ok(OperationLock { _file: file })
+}
+
+pub(crate) fn try_snapshot_lock_for(path: &Path) -> Result<SnapshotLock, LockError> {
+    let file = open_lock_file(&sibling_path(path, OPERATION_LOCK_SUFFIX))?;
+    file.try_lock_shared().map_err(map_lock_error)?;
+    Ok(SnapshotLock { _file: file })
+}
+
+pub(crate) fn try_service_lock_for(path: &Path) -> Result<ServiceLock, LockError> {
+    let file = open_lock_file(&sibling_path(path, SERVICE_LOCK_SUFFIX))?;
+    file.try_lock().map_err(map_lock_error)?;
+    Ok(ServiceLock { _file: file })
+}
+
+fn open_lock_file(path: &Path) -> Result<fs::File, LockError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            LockError::Io(format!("could not create {}: {error}", parent.display()))
+        })?;
+    }
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options
+        .open(path)
+        .map_err(|error| LockError::Io(format!("could not open {}: {error}", path.display())))
+}
+
+fn map_lock_error(error: fs::TryLockError) -> LockError {
+    match error {
+        fs::TryLockError::WouldBlock => LockError::Busy,
+        fs::TryLockError::Error(error) => LockError::Io(error.to_string()),
+    }
 }
 
 pub(crate) fn load_from_path(path: &Path) -> Result<Store, String> {
     match fs::read(path) {
-        Ok(data) => serde_json::from_slice(&data)
-            .map_err(|error| format!("{} contains invalid JSON: {error}", path.display())),
+        Ok(data) => serde_json::from_slice(&data).map_err(|error| {
+            format!(
+                "{} contains invalid JSON at line {}, column {}",
+                path.display(),
+                error.line(),
+                error.column()
+            )
+        }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => load_missing_store(path),
         Err(error) => Err(format!("could not read {}: {error}", path.display())),
+    }
+}
+
+#[cfg(any(test, feature = "dev-tools"))]
+pub(crate) fn store_exists_or_recoverable(path: &Path) -> bool {
+    if path.exists() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        sibling_path(path, "bak").exists()
+    }
+    #[cfg(not(windows))]
+    {
+        false
     }
 }
 
@@ -40,8 +112,10 @@ fn load_missing_store(path: &Path) -> Result<Store, String> {
     match fs::read(&backup_path) {
         Ok(data) => serde_json::from_slice(&data).map_err(|error| {
             format!(
-                "recovery file {} contains invalid JSON: {error}",
-                backup_path.display()
+                "recovery file {} contains invalid JSON at line {}, column {}",
+                backup_path.display(),
+                error.line(),
+                error.column()
             )
         }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Store::default()),
@@ -117,7 +191,7 @@ fn sibling_path(path: &Path, suffix: &str) -> PathBuf {
     path.with_file_name(format!("{file_name}.{suffix}"))
 }
 
-fn store_path() -> Result<PathBuf, String> {
+pub(crate) fn store_path() -> Result<PathBuf, String> {
     config_dir().map(|path| path.join(STORE_FILE_NAME))
 }
 
@@ -218,6 +292,47 @@ mod tests {
 
         assert!(load_from_path(&path).unwrap().show_protected_killmails);
         assert!(!sibling_path(&path, "tmp").exists());
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn operation_lock_reports_contention_and_is_released_on_drop() {
+        let path = temporary_store_path();
+        let first = try_operation_lock_for(&path).unwrap();
+
+        assert!(matches!(
+            try_operation_lock_for(&path),
+            Err(LockError::Busy)
+        ));
+
+        drop(first);
+        assert!(try_operation_lock_for(&path).is_ok());
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn snapshot_reads_contend_with_an_active_operation() {
+        let path = temporary_store_path();
+        let operation = try_operation_lock_for(&path).unwrap();
+
+        assert!(matches!(try_snapshot_lock_for(&path), Err(LockError::Busy)));
+
+        drop(operation);
+        assert!(try_snapshot_lock_for(&path).is_ok());
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn service_lock_is_independent_from_operation_lock() {
+        let path = temporary_store_path();
+        let operation = try_operation_lock_for(&path).unwrap();
+        let service = try_service_lock_for(&path).unwrap();
+
+        assert!(matches!(try_service_lock_for(&path), Err(LockError::Busy)));
+
+        drop(service);
+        assert!(try_service_lock_for(&path).is_ok());
+        drop(operation);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

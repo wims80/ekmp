@@ -1,5 +1,8 @@
 use crate::{
-    integrations::{backend::Backend, zkill},
+    integrations::{
+        backend::{Backend, LoadKillmailsOutcome},
+        zkill,
+    },
     models::{Character, Killmail, ProtectedVictim, ProtectedVictimKind, Store, ZkillCacheEntry},
 };
 use serde::Deserialize;
@@ -60,6 +63,13 @@ pub(crate) struct SimulatorBackend {
     load_error: Option<String>,
     status_error: Option<String>,
     posted_ids: Mutex<Vec<u64>>,
+}
+
+fn unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 pub(crate) fn load(name: &str) -> Result<LoadedScenario, String> {
@@ -139,14 +149,18 @@ impl SimulatorBackend {
         reported: &HashMap<u64, Vec<u64>>,
         character_id: u64,
         page: usize,
-    ) -> Result<Vec<zkill::KillEntry>, String> {
+    ) -> Result<zkill::LookupPage, String> {
         if let Some(error) = &self.status_error {
             return Err(error.clone());
         }
         if page != 1 {
-            return Ok(Vec::new());
+            return Ok(zkill::LookupPage {
+                entries: Vec::new(),
+                observed_at: unix_time(),
+                valid_until: unix_time() + 60 * 60,
+            });
         }
-        Ok(reported
+        let entries = reported
             .get(&character_id)
             .into_iter()
             .flatten()
@@ -159,17 +173,28 @@ impl SimulatorBackend {
                     .map(|mail| mail.time.clone())
                     .unwrap_or_else(|| "2000-01-01T00:00:00Z".into()),
             })
-            .collect())
+            .collect();
+        let observed_at = unix_time();
+        Ok(zkill::LookupPage {
+            entries,
+            observed_at,
+            valid_until: observed_at + 60 * 60,
+        })
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "gui"))]
     pub(crate) fn posted_ids(&self) -> Vec<u64> {
         self.posted_ids.lock().unwrap().clone()
     }
 }
 
 impl Backend for SimulatorBackend {
-    fn authenticate(&self, _cancelled: &AtomicBool) -> Result<Character, String> {
+    fn authenticate(
+        &self,
+        _cancelled: &AtomicBool,
+        _open_browser: bool,
+        _on_authorization_url: &dyn Fn(&str),
+    ) -> Result<Character, String> {
         self.connect_characters
             .lock()
             .map_err(|_| "simulation character queue is unavailable".to_string())?
@@ -177,7 +202,14 @@ impl Backend for SimulatorBackend {
             .ok_or_else(|| "the simulation has no more characters to connect".into())
     }
 
-    fn refresh_character_affiliation(&self, character: &mut Character) -> Result<(), String> {
+    fn refresh_character_affiliation(
+        &self,
+        character: &mut Character,
+        cancelled: &AtomicBool,
+    ) -> Result<(), String> {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Operation cancelled".into());
+        }
         let known = self
             .known_characters
             .iter()
@@ -196,10 +228,18 @@ impl Backend for SimulatorBackend {
         _characters: &[Character],
         _cached_killmails: &[Killmail],
         _reported_ids: &HashSet<u64>,
-    ) -> Result<Vec<Killmail>, String> {
+        cancelled: &AtomicBool,
+        _on_character_updated: &mut dyn FnMut(&Character) -> Result<(), String>,
+    ) -> Result<LoadKillmailsOutcome, String> {
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("Operation cancelled".into());
+        }
         match &self.load_error {
             Some(error) => Err(error.clone()),
-            None => Ok(self.killmails.clone()),
+            None => Ok(LoadKillmailsOutcome {
+                killmails: self.killmails.clone(),
+                character_failures: Vec::new(),
+            }),
         }
     }
 
@@ -225,7 +265,7 @@ impl Backend for SimulatorBackend {
         &self,
         character_id: u64,
         page: usize,
-    ) -> Result<Vec<zkill::KillEntry>, String> {
+    ) -> Result<zkill::LookupPage, String> {
         self.status_page(&self.reported_kills, character_id, page)
     }
 
@@ -233,7 +273,7 @@ impl Backend for SimulatorBackend {
         &self,
         character_id: u64,
         page: usize,
-    ) -> Result<Vec<zkill::KillEntry>, String> {
+    ) -> Result<zkill::LookupPage, String> {
         self.status_page(&self.reported_losses, character_id, page)
     }
 
@@ -280,6 +320,16 @@ mod tests {
     fn bundled_scenarios_are_valid() {
         assert_eq!(load("mixed").unwrap().name, "mixed");
         assert_eq!(load("errors").unwrap().name, "errors");
+    }
+
+    #[test]
+    fn failed_simulated_submission_is_recorded_without_changing_cached_state() {
+        let loaded = load("errors").unwrap();
+        assert!(!loaded.store.characters.is_empty());
+        let mail = &loaded.backend.killmails[0];
+        assert!(loaded.backend.post(mail).is_err());
+        assert_eq!(*loaded.backend.posted_ids.lock().unwrap(), vec![mail.id]);
+        assert!(!loaded.store.zkill_cache[&mail.id].reported);
     }
 
     #[test]

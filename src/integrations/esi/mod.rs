@@ -1,8 +1,9 @@
 use crate::{
     integrations::auth,
+    integrations::backend::LoadKillmailsOutcome,
     models::{
-        Character, Killmail, KillmailAttacker, KillmailDetail, KillmailItem, KillmailLocation,
-        KillmailVictimDetail, ProtectedVictimKind,
+        ApiCooldown, Character, Killmail, KillmailAttacker, KillmailDetail, KillmailItem,
+        KillmailLocation, KillmailVictimDetail, ProtectedVictimKind,
     },
     persistence::esi_cache::{CachedResponse, EsiCache},
 };
@@ -15,7 +16,15 @@ use reqwest::{
     StatusCode,
 };
 use serde::de::DeserializeOwned;
-use std::collections::{HashMap, HashSet};
+use std::{
+    cell::{Cell, RefCell},
+    collections::{HashMap, HashSet},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex, OnceLock,
+    },
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 mod client;
 mod killmails;
@@ -43,19 +52,101 @@ const USER_AGENT_VALUE: &str = concat!(
     " (+https://github.com/wims80/ekmp)"
 );
 
+struct ObservedCooldown {
+    owner: std::thread::ThreadId,
+    cooldown: ApiCooldown,
+}
+
+static OBSERVED_COOLDOWNS: OnceLock<Mutex<Vec<ObservedCooldown>>> = OnceLock::new();
+thread_local! {
+    static RATE_GATE_UNTIL: Cell<u64> = const { Cell::new(0) };
+    static RATE_SCOPE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+fn with_rate_limit_scope<T>(scope: String, operation: impl FnOnce() -> T) -> T {
+    let previous = RATE_SCOPE.with(|current| current.replace(Some(scope)));
+    let result = operation();
+    RATE_SCOPE.with(|current| current.replace(previous));
+    result
+}
+
+fn rate_limit_scope() -> Option<String> {
+    RATE_SCOPE.with(|scope| scope.borrow().clone())
+}
+
+pub fn take_api_cooldowns() -> Vec<ApiCooldown> {
+    RATE_GATE_UNTIL.set(0);
+    let mut cooldowns = OBSERVED_COOLDOWNS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let owner = std::thread::current().id();
+    let mut own = Vec::new();
+    cooldowns.retain(|observed| {
+        if observed.owner == owner {
+            own.push(observed.cooldown.clone());
+            false
+        } else {
+            true
+        }
+    });
+    own
+}
+
+fn record_cooldown(cooldown: ApiCooldown) {
+    RATE_GATE_UNTIL.set(RATE_GATE_UNTIL.get().max(cooldown.until));
+    OBSERVED_COOLDOWNS
+        .get_or_init(|| Mutex::new(Vec::new()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .push(ObservedCooldown {
+            owner: std::thread::current().id(),
+            cooldown,
+        });
+}
+
+fn active_cooldown_error() -> Option<String> {
+    let now = unix_time();
+    let until = RATE_GATE_UNTIL.get();
+    (until > now).then(|| {
+        format!(
+            "ESI rate budget requires retry after {} seconds",
+            until.saturating_sub(now)
+        )
+    })
+}
+
+fn unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn http_client() -> Result<Client, String> {
+    Client::builder()
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|_| "Could not configure the HTTP client".to_string())
+}
+
 pub fn load_killmails(
     chars: &[Character],
     cached_killmails: &[Killmail],
     reported_ids: &HashSet<u64>,
-) -> Result<Vec<Killmail>, String> {
+    cancelled: &AtomicBool,
+    on_character_updated: &mut dyn FnMut(&Character) -> Result<(), String>,
+) -> Result<LoadKillmailsOutcome, String> {
     let mut cache = EsiCache::open().ok();
     load_killmails_at(
         ESI,
         chars,
         cached_killmails,
         reported_ids,
+        cancelled,
         &mut cache,
-        auth::access_token,
+        |character| auth::access_token(character, on_character_updated),
     )
 }
 
@@ -64,6 +155,7 @@ fn enrich_locations(
     esi: &str,
     cache: &mut Option<EsiCache>,
     mails: &mut [Killmail],
+    cancelled: &AtomicBool,
 ) -> Result<(), String> {
     let mut locations = HashMap::new();
     for system_id in mails.iter().filter_map(|mail| {
@@ -75,10 +167,12 @@ fn enrich_locations(
                 .then_some(detail.location.solar_system_id)
         })
     }) {
+        check_cancelled(cancelled)?;
         if locations.contains_key(&system_id) {
             continue;
         }
         let location = (|| -> Result<KillmailLocation, String> {
+            check_cancelled(cancelled)?;
             let system: SolarSystemInfo = cached_get_json(
                 client,
                 cache,
@@ -87,6 +181,7 @@ fn enrich_locations(
                 || Ok(None),
                 &format!("Solar system lookup for {system_id}"),
             )?;
+            check_cancelled(cancelled)?;
             let constellation: ConstellationInfo = cached_get_json(
                 client,
                 cache,
@@ -95,6 +190,7 @@ fn enrich_locations(
                 || Ok(None),
                 &format!("Constellation lookup for {}", system.constellation_id),
             )?;
+            check_cancelled(cancelled)?;
             let region: Name = cached_get_json(
                 client,
                 cache,
@@ -131,6 +227,14 @@ fn enrich_locations(
         }
     }
     Ok(())
+}
+
+fn check_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
+    if cancelled.load(Ordering::Relaxed) {
+        Err("Operation cancelled".into())
+    } else {
+        Ok(())
+    }
 }
 
 fn character_info(
@@ -195,7 +299,7 @@ mod tests {
     use std::{
         fs,
         path::PathBuf,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::atomic::{AtomicBool, AtomicU64, Ordering},
     };
 
     static NEXT_CACHE_PATH: AtomicU64 = AtomicU64::new(0);
@@ -412,10 +516,12 @@ mod tests {
             &[character(1, "Pilot")],
             &[],
             &HashSet::new(),
+            &AtomicBool::new(false),
             &mut None,
             |_| Ok("synthetic-token".into()),
         )
-        .unwrap();
+        .unwrap()
+        .killmails;
 
         assert_eq!(mails.len(), 1);
         assert_eq!(mails[0].id, 42);
@@ -483,10 +589,12 @@ mod tests {
             &[character(1, "New Source")],
             &[cached],
             &HashSet::new(),
+            &AtomicBool::new(false),
             &mut None,
             |_| Ok("synthetic-token".into()),
         )
-        .unwrap();
+        .unwrap()
+        .killmails;
 
         detail.assert_calls(0);
         assert_eq!(mails[0].victim, "Current Victim");
@@ -510,12 +618,137 @@ mod tests {
             &[character(1, "Pilot")],
             &[],
             &HashSet::from([42]),
+            &AtomicBool::new(false),
             &mut None,
             |_| Ok("synthetic-token".into()),
         )
-        .unwrap();
+        .unwrap()
+        .killmails;
 
         assert!(mails.is_empty());
+    }
+
+    #[test]
+    fn market_rate_limit_stops_before_killmail_detail_requests() {
+        let _ = take_api_cooldowns();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/characters/1/killmails/recent/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"[{"killmail_id":42,"killmail_hash":"sentinel-secret-hash"}]"#);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/markets/prices/");
+            then.status(429)
+                .header("retry-after", "60")
+                .header("x-ratelimit-group", "market")
+                .body("sentinel response body");
+        });
+        let detail = server.mock(|when, then| {
+            when.method(GET).path("/killmails/42/sentinel-secret-hash");
+            then.status(200).body("{}");
+        });
+
+        let error = match load_killmails_at(
+            &server.base_url(),
+            &[character(1, "Pilot")],
+            &[],
+            &HashSet::new(),
+            &AtomicBool::new(false),
+            &mut None,
+            |_| Ok("sentinel-token".into()),
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("rate-limited refresh unexpectedly succeeded"),
+        };
+
+        assert!(error.contains("rate limited"));
+        assert!(!error.contains("sentinel"));
+        detail.assert_calls(0);
+        let cooldowns = take_api_cooldowns();
+        assert_eq!(cooldowns.len(), 1);
+        assert_eq!(cooldowns[0].scope.as_deref(), Some("market"));
+    }
+
+    #[test]
+    fn exhausted_esi_error_budget_stops_the_next_character_request() {
+        let _ = take_api_cooldowns();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/characters/1/killmails/recent/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .header("x-esi-error-limit-remain", "0")
+                .header("x-esi-error-limit-reset", "60")
+                .body("[]");
+        });
+        let second = server.mock(|when, then| {
+            when.method(GET).path("/characters/2/killmails/recent/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body("[]");
+        });
+
+        let result = load_killmails_at(
+            &server.base_url(),
+            &[character(1, "One"), character(2, "Two")],
+            &[],
+            &HashSet::new(),
+            &AtomicBool::new(false),
+            &mut None,
+            |_| Ok("sentinel-token".into()),
+        );
+
+        assert!(matches!(result, Err(error) if error.contains("rate budget")));
+        second.assert_calls(0);
+        let cooldowns = take_api_cooldowns();
+        assert_eq!(cooldowns.len(), 1);
+        assert_eq!(
+            cooldowns[0].reason.as_deref(),
+            Some("error budget exhausted")
+        );
+    }
+
+    #[test]
+    fn low_group_budget_defers_detail_requests() {
+        let _ = take_api_cooldowns();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/characters/1/killmails/recent/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"[{"killmail_id":42,"killmail_hash":"sentinel-secret-hash"}]"#);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/markets/prices/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .header("x-ratelimit-limit", "150/15m")
+                .header("x-ratelimit-remaining", "10")
+                .header("x-ratelimit-group", "market")
+                .body("[]");
+        });
+        let detail = server.mock(|when, then| {
+            when.method(GET).path("/killmails/42/sentinel-secret-hash");
+            then.status(200).body("{}");
+        });
+
+        let result = load_killmails_at(
+            &server.base_url(),
+            &[character(1, "Pilot")],
+            &[],
+            &HashSet::new(),
+            &AtomicBool::new(false),
+            &mut None,
+            |_| Ok("sentinel-token".into()),
+        );
+
+        assert!(matches!(result, Err(error) if error.contains("rate budget")));
+        detail.assert_calls(0);
+        let cooldowns = take_api_cooldowns();
+        assert_eq!(cooldowns[0].scope.as_deref(), Some("market"));
+        assert_eq!(cooldowns[0].reason.as_deref(), Some("low rate budget"));
     }
 
     #[test]

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=EVE Killmail Publisher
+Comment=Review and publish EVE Online killmails
+Exec=@EXEC_PATH@ gui
+Icon=ekmp
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=ekmp

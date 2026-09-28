@@ -27,6 +27,7 @@ $PackageDirectory = Join-Path $StagingDirectory "ekmp-v$Version-x86_64-pc-window
 try {
     New-Item -ItemType Directory -Path $PackageDirectory | Out-Null
     Copy-Item -LiteralPath $Binary -Destination (Join-Path $PackageDirectory "ekmp.exe")
+    Copy-Item -LiteralPath (Join-Path $RepositoryRoot "packaging\windows\launch-gui.cmd") -Destination (Join-Path $PackageDirectory "launch-gui.cmd")
     Copy-Item -LiteralPath (Join-Path $RepositoryRoot "packaging\INSTALL.md") -Destination (Join-Path $PackageDirectory "README.md")
     Copy-Item -LiteralPath (Join-Path $RepositoryRoot "LICENSE") -Destination (Join-Path $PackageDirectory "LICENSE")
     Compress-Archive -LiteralPath $PackageDirectory -DestinationPath $ArchivePath

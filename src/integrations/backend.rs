@@ -1,19 +1,42 @@
 use crate::{
     integrations::{auth, esi, zkill},
-    models::{Character, Killmail, ProtectedVictim, ProtectedVictimKind},
+    models::{ApiCooldown, Character, Killmail, ProtectedVictim, ProtectedVictimKind},
     persistence::secrets,
 };
 use std::{collections::HashSet, sync::atomic::AtomicBool, time::Duration};
 
+#[derive(Debug)]
+pub(crate) struct CharacterRefreshFailure {
+    pub character_id: u64,
+    pub character_name: String,
+    pub error: String,
+}
+
+pub(crate) struct LoadKillmailsOutcome {
+    pub killmails: Vec<Killmail>,
+    pub character_failures: Vec<CharacterRefreshFailure>,
+}
+
 pub(crate) trait Backend: Send + Sync {
-    fn authenticate(&self, cancelled: &AtomicBool) -> Result<Character, String>;
-    fn refresh_character_affiliation(&self, character: &mut Character) -> Result<(), String>;
+    fn authenticate(
+        &self,
+        cancelled: &AtomicBool,
+        open_browser: bool,
+        on_authorization_url: &dyn Fn(&str),
+    ) -> Result<Character, String>;
+    fn refresh_character_affiliation(
+        &self,
+        character: &mut Character,
+        cancelled: &AtomicBool,
+    ) -> Result<(), String>;
     fn load_killmails(
         &self,
         characters: &[Character],
         cached_killmails: &[Killmail],
         reported_ids: &HashSet<u64>,
-    ) -> Result<Vec<Killmail>, String>;
+        cancelled: &AtomicBool,
+        on_character_updated: &mut dyn FnMut(&Character) -> Result<(), String>,
+    ) -> Result<LoadKillmailsOutcome, String>;
     fn resolve_protected_victim(
         &self,
         kind: ProtectedVictimKind,
@@ -23,15 +46,19 @@ pub(crate) trait Backend: Send + Sync {
         &self,
         character_id: u64,
         page: usize,
-    ) -> Result<Vec<zkill::KillEntry>, String>;
+    ) -> Result<zkill::LookupPage, String>;
     fn character_loss_killmail_page(
         &self,
         character_id: u64,
         page: usize,
-    ) -> Result<Vec<zkill::KillEntry>, String>;
+    ) -> Result<zkill::LookupPage, String>;
     fn post(&self, mail: &Killmail) -> Result<zkill::PostOutcome, String>;
     fn save_refresh_token(&self, character_id: u64, token: &str) -> Result<(), String>;
     fn delete_refresh_token(&self, character_id: u64) -> Result<(), String>;
+
+    fn take_api_cooldowns(&self) -> Vec<ApiCooldown> {
+        Vec::new()
+    }
 
     fn request_spacing(&self) -> Duration {
         Duration::from_secs(1)
@@ -42,12 +69,21 @@ pub(crate) trait Backend: Send + Sync {
 pub(crate) struct LiveBackend;
 
 impl Backend for LiveBackend {
-    fn authenticate(&self, cancelled: &AtomicBool) -> Result<Character, String> {
-        auth::authenticate(cancelled)
+    fn authenticate(
+        &self,
+        cancelled: &AtomicBool,
+        open_browser: bool,
+        on_authorization_url: &dyn Fn(&str),
+    ) -> Result<Character, String> {
+        auth::authenticate(cancelled, open_browser, on_authorization_url)
     }
 
-    fn refresh_character_affiliation(&self, character: &mut Character) -> Result<(), String> {
-        esi::refresh_character_affiliation(character)
+    fn refresh_character_affiliation(
+        &self,
+        character: &mut Character,
+        cancelled: &AtomicBool,
+    ) -> Result<(), String> {
+        esi::refresh_character_affiliation(character, cancelled)
     }
 
     fn load_killmails(
@@ -55,8 +91,16 @@ impl Backend for LiveBackend {
         characters: &[Character],
         cached_killmails: &[Killmail],
         reported_ids: &HashSet<u64>,
-    ) -> Result<Vec<Killmail>, String> {
-        esi::load_killmails(characters, cached_killmails, reported_ids)
+        cancelled: &AtomicBool,
+        on_character_updated: &mut dyn FnMut(&Character) -> Result<(), String>,
+    ) -> Result<LoadKillmailsOutcome, String> {
+        esi::load_killmails(
+            characters,
+            cached_killmails,
+            reported_ids,
+            cancelled,
+            on_character_updated,
+        )
     }
 
     fn resolve_protected_victim(
@@ -81,7 +125,7 @@ impl Backend for LiveBackend {
         &self,
         character_id: u64,
         page: usize,
-    ) -> Result<Vec<zkill::KillEntry>, String> {
+    ) -> Result<zkill::LookupPage, String> {
         zkill::character_killmail_page(character_id, page)
     }
 
@@ -89,7 +133,7 @@ impl Backend for LiveBackend {
         &self,
         character_id: u64,
         page: usize,
-    ) -> Result<Vec<zkill::KillEntry>, String> {
+    ) -> Result<zkill::LookupPage, String> {
         zkill::character_loss_killmail_page(character_id, page)
     }
 
@@ -103,5 +147,11 @@ impl Backend for LiveBackend {
 
     fn delete_refresh_token(&self, character_id: u64) -> Result<(), String> {
         secrets::delete_refresh_token(character_id)
+    }
+
+    fn take_api_cooldowns(&self) -> Vec<ApiCooldown> {
+        let mut cooldowns = esi::take_api_cooldowns();
+        cooldowns.extend(zkill::take_api_cooldowns());
+        cooldowns
     }
 }

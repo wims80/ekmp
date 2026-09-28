@@ -5,7 +5,8 @@
   package, executable, application ID, storage paths, and platform assets use
   that identifier.
 - Repository creation and GitHub identity work remain tracked in `TODO.md`.
-- This is a native Rust desktop application built with `eframe`/`egui`.
+- This is a Rust application with a CLI-first default interface and an optional
+  `eframe`/`egui` GUI feature.
 - EVE data comes from ESI, authentication uses EVE SSO with PKCE, and killmails
   are submitted to zKillboard.
 - The EVE client ID is a public application identifier. A client secret must
@@ -36,16 +37,37 @@
 
 ## Architecture
 
-- `src/app/mod.rs` owns application state, construction, shared status handling,
-  and persistence coordination.
-- `src/app/operations.rs` owns operation startup and submission revalidation.
-- `src/app/events.rs` owns worker-event handling and operation completion.
+- `src/core/` owns GUI-independent application state, typed commands and
+  snapshots, operation coordination, persistence, credential operations,
+  refresh scheduling, cross-process locking, and submission revalidation.
+  `mod.rs` retains the `Core` entry point, private fields, explicit re-exports,
+  and event registration and emission. Private modules split responsibilities:
+  `types.rs` owns shared errors, events, snapshots, selections, and results;
+  `store.rs` owns persistence, construction, initialization, operation and
+  service guards, snapshots, status summaries, and simple persisted mutations;
+  `characters.rs` owns authentication, removal, and refresh-token migration;
+  `protection.rs` owns killmail and victim protection and the show-protected
+  preference; `refresh.rs` owns refresh operations, scheduling, backoff,
+  affiliations, and ESI loading; `status.rs` owns shared zKillboard status
+  refresh, pagination, query caching, evidence reconciliation, reported-record
+  pruning, and source timestamps; `posting.rs` owns confirmation, submission
+  revalidation, skipped results, and session reports; `timing.rs` owns
+  cancellation, waits, system time, API cooldowns, and durable zKillboard request
+  spacing. Tests live alongside their owning modules, with shared backend and
+  store fixtures in test-only `test_support.rs`.
+- `src/cli.rs` owns Clap command parsing, terminal confirmation, JSON rendering,
+  cancellation handling, and the foreground refresh service.
+- `src/app/` owns the optional GUI shell. It renders core snapshots, GUI-only
+  textures and expansion state, and polls shared state without writing a stale
+  snapshot back to storage.
 - `src/app/ui/` owns egui rendering and user interactions: `mod.rs` owns the
   app frame and dispatches component actions, `theme.rs` owns shared visual
   styling, `components.rs` owns shared widgets, `dialogs.rs` owns confirmation
   dialogs, `sidebar.rs` owns sidebar rendering, and `killmail.rs` owns
   killmail-card and detail rendering.
-- `src/app/worker.rs` owns blocking background work and worker events.
+- `src/app/operations.rs` runs core operations and snapshot polling on background
+  threads and updates GUI presentation from their results.
+- `src/app/worker.rs` owns the GUI image-loading worker.
 - `src/killmail.rs` owns killmail visibility, reporting status, protection,
   and submission policy.
 - `src/integrations/` owns external API integrations: EVE SSO authentication,
@@ -57,8 +79,9 @@
   EVE identities, `market.rs` estimates values, and `types.rs` contains
   private response DTOs.
 - `dev/scenarios/` owns synthetic JSON scenarios for offline development. The
-  `dev-tools` feature enables scenario launch and eframe inspection for agent
-  control; live runs must never expose the inspection interface.
+  `dev-tools` feature enables scenario launch in CLI-only and GUI builds;
+  eframe inspection is enabled only with the `gui` feature. Live runs must
+  never expose the inspection interface.
 - `src/models.rs` contains persisted and domain models.
 - `src/persistence/secrets.rs` owns cross-platform refresh-token storage:
   Secret Service on Linux, Keychain on macOS, and Credential Manager on
@@ -71,9 +94,9 @@
   portraits and corporation logos.
 - `src/persistence/esi_cache.rs` owns the local SQLite cache for cacheable ESI
   GET responses, including expiry and conditional-request metadata.
-- `packaging/linux/` owns files installed by the Linux release archive;
-  `scripts/package-linux.sh` and `scripts/package-windows.ps1` assemble the
-  platform release archives.
+- `packaging/linux/` and `packaging/windows/` own release launchers and the
+  opt-in Linux systemd user-service template; `scripts/package-linux.sh` and
+  `scripts/package-windows.ps1` assemble the platform release archives.
 - Keep blocking HTTP and sleeps off the egui UI thread.
 - Keep submission-policy functions centralized and covered by tests.
 - When architectural boundaries, module ownership, or important paths change,

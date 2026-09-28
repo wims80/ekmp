@@ -1,73 +1,80 @@
-mod events;
 mod operations;
 mod ui;
 mod worker;
 
 use crate::{
-    integrations::backend::{Backend, LiveBackend},
-    killmail::{
-        posting_summary, remove_killmails_without_authenticated_sources,
-        remove_reported_killmail_flags, remove_reported_killmails,
+    core::{
+        Core, CoreError, CoreEvent, CredentialMigrationResult, PostBatchResult, PreparedPost,
+        RefreshResult, RemoveCharacterResult, SessionReport, Snapshot, StatusSnapshot,
     },
-    models::{Character, Killmail, ProtectedVictimKind, Store, ZKILL_STATUS_CACHE_VERSION},
-    persistence::storage,
+    integrations::backend::{Backend, LiveBackend},
+    models::{Character, ProtectedVictim, ProtectedVictimKind, Store},
 };
 use eframe::egui;
 #[cfg(any(test, feature = "dev-tools"))]
 use std::path::PathBuf;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    sync::{
-        atomic::AtomicBool,
-        mpsc::{Receiver, Sender},
-        Arc,
-    },
+    sync::{mpsc::Receiver, Arc},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
-use worker::{IdentityImageEvent, IdentityImageKey, WorkerEvent};
+use worker::{IdentityImageEvent, IdentityImageKey};
 
 const STATUS_HISTORY_LIMIT: usize = 200;
+const SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy)]
 enum Operation {
     Authenticate,
     MigrateRefreshTokens,
     RemoveCharacter,
-    Load,
-    CheckCachedStatuses,
+    Refresh,
     AddProtectedVictim,
-    Post(SubmissionMode),
+    RemoveProtectedVictim,
+    SetShowProtected,
+    SetKillmailProtection,
+    PreparePost,
+    Post,
 }
 
-#[derive(Clone, Copy)]
-enum SubmissionMode {
-    Individual,
-    Bulk,
-}
-
-#[derive(Default)]
-struct PostStats {
-    total: usize,
-    new: usize,
-    existing: usize,
-    failed: usize,
-}
-
-struct SessionReport {
-    killmail_id: u64,
-    url: String,
-    status: SessionReportStatus,
-}
-
-#[derive(Clone, Copy)]
-enum SessionReportStatus {
-    Submitted,
-    AlreadyPresent,
+struct PendingCharacterRemoval {
+    id: u64,
+    name: String,
 }
 
 struct ActiveOperation {
     kind: Operation,
-    events: Receiver<WorkerEvent>,
-    cancellation: Option<Arc<AtomicBool>>,
+    updates: Receiver<OperationUpdate>,
+    cancellation: Option<crate::core::Cancellation>,
+    cancellation_requested: bool,
+}
+
+enum OperationUpdate {
+    AuthorizationUrl(String),
+    Completed(Result<OperationOutcome, CoreError>),
+}
+
+enum OperationOutcome {
+    Authenticated(Character),
+    RefreshTokensMigrated(CredentialMigrationResult),
+    CharacterRemoved(RemoveCharacterResult),
+    Refreshed(RefreshResult),
+    ProtectedVictimAdded {
+        kind: ProtectedVictimKind,
+        victim: ProtectedVictim,
+    },
+    ProtectedVictimRemoved {
+        kind: ProtectedVictimKind,
+        id: u64,
+        removed: bool,
+    },
+    ShowProtectedSet(bool),
+    KillmailProtectionSet {
+        id: u64,
+        protected: bool,
+    },
+    PostPrepared(PreparedPost),
+    Posted(PostBatchResult),
 }
 
 enum IdentityImageState {
@@ -77,142 +84,127 @@ enum IdentityImageState {
 }
 
 pub struct App {
+    core: Core,
+    core_events: Receiver<CoreEvent>,
     store: Store,
+    core_status: StatusSnapshot,
     latest_status: String,
     status_history: VecDeque<String>,
     active_operation: Option<ActiveOperation>,
-    post_stats: PostStats,
-    pending_bulk: Option<Vec<Killmail>>,
-    pending_character_removal: Option<Character>,
+    snapshot_result: Option<Receiver<Result<Snapshot, CoreError>>>,
+    last_snapshot_poll: Instant,
+    refresh_after_snapshot: bool,
+    pending_post: Option<PreparedPost>,
+    pending_character_removal: Option<PendingCharacterRemoval>,
+    authorization_url: Option<String>,
     new_protected_victim_query: String,
     new_protected_victim_kind: ProtectedVictimKind,
     session_reports: Vec<SessionReport>,
     expanded_killmail_ids: HashSet<u64>,
     persistence_blocked: Option<String>,
-    identity_image_requests: Sender<IdentityImageKey>,
+    identity_image_requests: std::sync::mpsc::Sender<IdentityImageKey>,
     identity_image_events: Receiver<IdentityImageEvent>,
     identity_images: HashMap<IdentityImageKey, IdentityImageState>,
-    backend: Arc<dyn Backend>,
-    persistence: PersistenceTarget,
     simulation_name: Option<String>,
     run_jobs_inline: bool,
 }
 
-pub(crate) enum PersistenceTarget {
-    Live,
-    #[cfg(any(test, feature = "dev-tools"))]
-    Disabled,
-    #[cfg(any(test, feature = "dev-tools"))]
-    File(PathBuf),
-}
-
 impl App {
     pub fn new() -> Self {
-        let (mut store, persistence_blocked) = match storage::load() {
-            Ok(store) => (store, None),
-            Err(error) => (Store::default(), Some(error)),
+        let backend: Arc<dyn Backend> = Arc::new(LiveBackend);
+        let (core, persistence_blocked) = match Core::live(Arc::clone(&backend)) {
+            Ok(core) => (core, None),
+            Err(error) => (
+                Core::in_memory(backend, Store::default()),
+                Some(error.to_string()),
+            ),
         };
-        Self::build(
-            &mut store,
-            persistence_blocked,
-            Arc::new(LiveBackend),
-            PersistenceTarget::Live,
-            None,
-            false,
-        )
+        Self::build(core, persistence_blocked, None, false)
     }
 
     #[cfg(any(test, feature = "dev-tools"))]
     pub(crate) fn simulated(
-        mut store: Store,
+        store: Store,
         backend: Arc<dyn Backend>,
         scenario_name: String,
         state_path: Option<PathBuf>,
         run_jobs_inline: bool,
     ) -> Self {
-        let persistence = match state_path {
-            Some(path) => PersistenceTarget::File(path),
-            None => PersistenceTarget::Disabled,
+        let (core, persistence_blocked) = match state_path {
+            Some(path) => {
+                let core = Core::at_path(backend, path);
+                let error = core.initialize(store).err().map(|error| error.to_string());
+                (core, error)
+            }
+            None => (Core::in_memory(backend, store), None),
         };
         Self::build(
-            &mut store,
-            None,
-            backend,
-            persistence,
+            core,
+            persistence_blocked,
             Some(scenario_name),
             run_jobs_inline,
         )
     }
 
     fn build(
-        store: &mut Store,
-        persistence_blocked: Option<String>,
-        backend: Arc<dyn Backend>,
-        persistence: PersistenceTarget,
+        core: Core,
+        mut persistence_blocked: Option<String>,
         simulation_name: Option<String>,
         run_jobs_inline: bool,
     ) -> Self {
+        let (core_event_tx, core_events) = std::sync::mpsc::channel();
+        let core = core.with_events(core_event_tx);
+        let fallback_snapshot = || {
+            Core::in_memory(Arc::new(LiveBackend), Store::default())
+                .snapshot()
+                .expect("an in-memory default snapshot must load")
+        };
+        let (snapshot, refresh_after_snapshot) = match core.snapshot() {
+            Ok(snapshot) => (snapshot, false),
+            Err(CoreError::Busy) => (fallback_snapshot(), true),
+            Err(error) => {
+                persistence_blocked.get_or_insert_with(|| error.to_string());
+                (fallback_snapshot(), false)
+            }
+        };
         let (identity_image_requests, identity_image_events) =
             worker::start_identity_image_worker(simulation_name.is_none());
-        let invalidated_unreported = invalidate_outdated_negative_statuses(store);
-        let removed_reported =
-            remove_reported_killmails(&store.zkill_cache, &mut store.cached_killmails);
-        let removed_reported_flags = remove_reported_killmail_flags(
-            &store.zkill_cache,
-            &mut store.manually_protected_killmail_ids,
-        );
-        let store_view = store.clone();
-        let removed_orphaned = remove_killmails_without_authenticated_sources(
-            &store_view,
-            &mut store.cached_killmails,
-        );
+        let session_reports = core.session_reports();
         let mut app = Self {
-            store: std::mem::take(store),
+            core,
+            core_events,
+            store: snapshot.store,
+            core_status: snapshot.status,
             latest_status: "Ready to load recent killmails.".into(),
             status_history: VecDeque::from(["Ready to load recent killmails.".into()]),
             active_operation: None,
-            post_stats: PostStats::default(),
-            pending_bulk: None,
+            snapshot_result: None,
+            last_snapshot_poll: Instant::now()
+                .checked_sub(SNAPSHOT_POLL_INTERVAL)
+                .unwrap_or_else(Instant::now),
+            refresh_after_snapshot,
+            pending_post: None,
             pending_character_removal: None,
+            authorization_url: None,
             new_protected_victim_query: String::new(),
             new_protected_victim_kind: ProtectedVictimKind::Character,
-            session_reports: Vec::new(),
+            session_reports,
             expanded_killmail_ids: HashSet::new(),
             persistence_blocked,
             identity_image_requests,
             identity_image_events,
             identity_images: HashMap::new(),
-            backend,
-            persistence,
             simulation_name,
             run_jobs_inline,
         };
         if let Some(error) = app.persistence_blocked.clone() {
             app.log(format!(
-                "Could not safely load local state; saving is disabled: {error}"
+                "Could not safely load local state; operations are disabled: {error}"
             ));
-        } else if invalidated_unreported > 0
-            || removed_reported > 0
-            || removed_reported_flags > 0
-            || removed_orphaned > 0
-        {
-            app.persist_or_log_error();
-        }
-        if invalidated_unreported > 0 {
-            app.log(format!(
-                "Rechecking {invalidated_unreported} cached killmail status{} with the updated zKillboard lookup",
-                if invalidated_unreported == 1 { "" } else { "es" }
-            ));
-        }
-        if app
-            .store
-            .characters
-            .iter()
-            .any(|character| character.uses_json_refresh_token_fallback())
-        {
+        } else if app.has_json_refresh_token_fallback() {
             app.migrate_refresh_tokens();
-        } else {
-            app.check_cached_statuses_on_startup();
+        } else if !app.store.characters.is_empty() {
+            app.refresh_killmails();
         }
         app
     }
@@ -233,22 +225,20 @@ impl App {
                 Operation::Authenticate => "Waiting for EVE authorization".into(),
                 Operation::MigrateRefreshTokens => "Securing character credentials".into(),
                 Operation::RemoveCharacter => "Disconnecting character".into(),
-                Operation::Load => "Loading recent killmails".into(),
-                Operation::CheckCachedStatuses => "Checking zKillboard status".into(),
+                Operation::Refresh => "Loading recent killmails".into(),
                 Operation::AddProtectedVictim => "Adding protected victim".into(),
-                Operation::Post(SubmissionMode::Individual) => "Posting one killmail".into(),
-                Operation::Post(SubmissionMode::Bulk) => "Posting eligible killmails".into(),
+                Operation::RemoveProtectedVictim => "Removing protected victim".into(),
+                Operation::SetShowProtected | Operation::SetKillmailProtection => {
+                    "Saving protection settings".into()
+                }
+                Operation::PreparePost => "Checking posting eligibility".into(),
+                Operation::Post => "Posting confirmed killmails".into(),
             };
         }
         if self.persistence_blocked.is_some() {
             return "Local state unavailable - See warning".into();
         }
-
-        let latest_status = self.latest_status.to_ascii_lowercase();
-        if latest_status.contains("failed")
-            || latest_status.contains("could not")
-            || latest_status.contains("unavailable")
-        {
+        if self.core_status.last_error.is_some() {
             return "Action needed - See activity log".into();
         }
         if self.store.characters.is_empty() {
@@ -257,24 +247,61 @@ impl App {
         if self.store.cached_killmails.is_empty() {
             return "Ready to load recent killmails".into();
         }
-
-        let summary = posting_summary(
-            &self.store,
-            &self.store.cached_killmails,
-            worker::unix_time(),
-        );
-        if summary.awaiting_status > 0 {
-            format!("Checking {} killmail statuses", summary.awaiting_status)
-        } else if summary.eligible_for_bulk_posting > 0 {
+        if self.core_status.awaiting_status > 0 {
             format!(
-                "Ready - {} eligible for posting",
-                summary.eligible_for_bulk_posting
+                "Checking {} killmail statuses",
+                self.core_status.awaiting_status
             )
-        } else if summary.protected > 0 {
-            format!("Review queue - {} protected", summary.protected)
+        } else if self.core_status.unreported > 0 {
+            format!(
+                "Review queue - {} confirmed unreported",
+                self.core_status.unreported
+            )
         } else {
             "Review queue is up to date".into()
         }
+    }
+
+    fn refresh_status_text(&self) -> String {
+        let now = unix_time();
+        let mut parts = Vec::new();
+        if let Some(last_attempt) = self.core_status.last_refresh_attempt_at {
+            parts.push(format!(
+                "Last refresh attempt {}",
+                relative_time_label(last_attempt, now)
+            ));
+        } else {
+            parts.push("Refresh has not run yet".into());
+        }
+        if let Some(last_success) = self.core_status.last_refresh_success_at {
+            parts.push(format!(
+                "last success {}",
+                relative_time_label(last_success, now)
+            ));
+        }
+        if let Some(next) = self.core_status.next_eligible_refresh_at {
+            parts.push(format!("next eligible {}", relative_time_label(next, now)));
+        }
+        if self.core_status.stale {
+            parts.push("cached data is stale".into());
+        }
+        parts.push(if self.core_status.service_running {
+            "refresh service running".into()
+        } else {
+            "refresh service stopped".into()
+        });
+        if !self.core_status.api_cooldowns.is_empty() {
+            parts.push(format!(
+                "{} API cooldown{} active",
+                self.core_status.api_cooldowns.len(),
+                if self.core_status.api_cooldowns.len() == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ));
+        }
+        parts.join(" · ")
     }
 
     fn persisted_controls_enabled(&self) -> bool {
@@ -285,31 +312,7 @@ impl App {
         self.store
             .characters
             .iter()
-            .any(|character| character.uses_json_refresh_token_fallback())
-    }
-
-    fn protected_victim_already_present(&self, kind: ProtectedVictimKind, id: u64) -> bool {
-        match kind {
-            ProtectedVictimKind::Character => {
-                self.store.characters.iter().any(|entry| entry.id == id)
-                    || self
-                        .store
-                        .manually_protected_characters
-                        .iter()
-                        .any(|entry| entry.id == id)
-            }
-            ProtectedVictimKind::Corporation => {
-                self.store
-                    .characters
-                    .iter()
-                    .any(|entry| entry.corporation_id == Some(id))
-                    || self
-                        .store
-                        .manually_protected_corporations
-                        .iter()
-                        .any(|entry| entry.id == id)
-            }
-        }
+            .any(Character::uses_json_refresh_token_fallback)
     }
 
     fn queue_identity_image(&mut self, key: IdentityImageKey) {
@@ -359,85 +362,105 @@ impl App {
         }
         self.status_history.push_back(message);
     }
+}
 
-    fn persist_or_log_error(&mut self) {
-        if self.persistence_blocked.is_some() {
-            self.log("Local state was not saved because it could not be loaded safely at startup");
-            return;
-        }
-        let result = match &self.persistence {
-            PersistenceTarget::Live => storage::persist(&self.store),
-            #[cfg(any(test, feature = "dev-tools"))]
-            PersistenceTarget::Disabled => return,
-            #[cfg(any(test, feature = "dev-tools"))]
-            PersistenceTarget::File(path) => {
-                let ensure_parent = path
-                    .parent()
-                    .filter(|parent| !parent.as_os_str().is_empty())
-                    .map_or(Ok(()), std::fs::create_dir_all)
-                    .map_err(|error| error.to_string());
-                ensure_parent.and_then(|()| {
-                    serde_json::to_vec_pretty(&self.store)
-                        .map_err(|error| error.to_string())
-                        .and_then(|data| {
-                            storage::persist_to_path(path, &data).map_err(|error| {
-                                format!("could not atomically write {}: {error}", path.display())
-                            })
-                        })
-                })
-            }
-        };
-        if let Err(error) = result {
-            self.log(format!("Could not save local state: {error}"));
-        }
-    }
-
-    fn prune_persisted_reported_killmails(&mut self) {
-        remove_reported_killmails(&self.store.zkill_cache, &mut self.store.cached_killmails);
-        remove_reported_killmail_flags(
-            &self.store.zkill_cache,
-            &mut self.store.manually_protected_killmail_ids,
-        );
+fn relative_time_label(timestamp: u64, now: u64) -> String {
+    if timestamp > now {
+        format!("in {}s", timestamp - now)
+    } else {
+        format!("{}s ago", now - timestamp)
     }
 }
 
-fn invalidate_outdated_negative_statuses(store: &mut Store) -> usize {
-    if store.zkill_status_cache_version >= ZKILL_STATUS_CACHE_VERSION {
-        return 0;
-    }
-    let previous_len = store.zkill_cache.len();
-    store.zkill_cache.retain(|_, entry| entry.reported);
-    store.zkill_status_cache_version = ZKILL_STATUS_CACHE_VERSION;
-    previous_len - store.zkill_cache.len()
+fn unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::models::ZkillCacheEntry;
+    use crate::core::{Cancellation, PostMode};
+    use crate::integrations::simulation;
+    use crate::persistence::storage;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
 
     #[test]
-    fn updated_lookup_invalidates_only_old_negative_cache_entries() {
-        let mut store = Store::default();
-        store.zkill_cache.insert(
-            1,
-            ZkillCacheEntry {
-                reported: true,
-                checked_at: 10,
-            },
-        );
-        store.zkill_cache.insert(
-            2,
-            ZkillCacheEntry {
-                reported: false,
-                checked_at: 10,
-            },
-        );
+    fn busy_initial_snapshot_is_retried_without_disabling_operations() {
+        let sequence = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
+        let directory = std::env::temp_dir().join(format!(
+            "ekmp-gui-busy-snapshot-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("ekmp.json");
+        let core = Core::at_path(Arc::new(LiveBackend), path.clone());
+        core.initialize(Store {
+            show_protected_killmails: true,
+            ..Store::default()
+        })
+        .unwrap();
+        let lock = storage::try_operation_lock_for(&path).unwrap();
 
-        assert_eq!(invalidate_outdated_negative_statuses(&mut store), 1);
-        assert!(store.zkill_cache.contains_key(&1));
-        assert!(!store.zkill_cache.contains_key(&2));
-        assert_eq!(store.zkill_status_cache_version, ZKILL_STATUS_CACHE_VERSION);
-        assert_eq!(invalidate_outdated_negative_statuses(&mut store), 0);
+        let mut app = App::build(core, None, Some("test".into()), true);
+
+        assert!(app.persistence_blocked.is_none());
+        assert!(!app.store.show_protected_killmails);
+        drop(lock);
+        app.last_snapshot_poll = Instant::now()
+            .checked_sub(SNAPSHOT_POLL_INTERVAL)
+            .unwrap_or_else(Instant::now);
+        app.poll_core();
+        app.poll_core();
+        assert!(app.store.show_protected_killmails);
+
+        drop(app);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn background_snapshot_poll_observes_external_core_edits() {
+        let core = Core::in_memory(Arc::new(LiveBackend), Store::default());
+        let external_core = core.clone();
+        let mut app = App::build(core, None, Some("test".into()), true);
+        assert!(!app.store.show_protected_killmails);
+
+        external_core.set_show_protected(true).unwrap();
+        assert!(!app.store.show_protected_killmails);
+
+        app.poll_core();
+        app.poll_core();
+
+        assert!(app.store.show_protected_killmails);
+    }
+
+    #[test]
+    fn completed_session_reports_survive_a_later_post_persistence_error() {
+        let loaded = simulation::load("mixed").unwrap();
+        let backend = Arc::new(loaded.backend);
+        let setup = Core::in_memory(backend.clone(), loaded.store);
+        setup.refresh(&Cancellation::new()).unwrap();
+        let mut store = setup.snapshot().unwrap().store;
+        store.characters.clear();
+        store
+            .cached_killmails
+            .retain(|mail| matches!(mail.id, 9001 | 9006));
+        let core = Core::in_memory_with_persist_budget(backend.clone(), store, 3);
+        let mut app = App::build(core, None, Some("test".into()), true);
+
+        app.post_prepared(PreparedPost {
+            ids: vec![9001, 9006],
+            mode: PostMode::Bulk,
+        });
+        app.poll_core();
+
+        assert_eq!(backend.posted_ids(), vec![9001, 9006]);
+        assert_eq!(app.session_reports.len(), 1);
+        assert_eq!(app.session_reports[0].killmail_id, 9001);
+        assert!(app.latest_status.contains("injected persistence failure"));
     }
 }

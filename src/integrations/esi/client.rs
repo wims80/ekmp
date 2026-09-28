@@ -1,4 +1,5 @@
 use super::{
+    active_cooldown_error, rate_limit_scope, record_cooldown, unix_time, ApiCooldown,
     CachedResponse, Client, DeserializeOwned, EsiCache, HeaderMap, StatusCode, CACHE_CONTROL, ETAG,
     EXPIRES, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED, RETRY_AFTER, USER_AGENT,
     USER_AGENT_VALUE,
@@ -12,6 +13,9 @@ pub(super) fn cached_get_json<T: DeserializeOwned>(
     bearer_token: impl FnOnce() -> Result<Option<String>, String>,
     request_description: &str,
 ) -> Result<T, String> {
+    if let Some(error) = active_cooldown_error() {
+        return Err(error);
+    }
     let cached = if cacheable {
         cache
             .as_ref()
@@ -43,9 +47,10 @@ pub(super) fn cached_get_json<T: DeserializeOwned>(
             if let Some(entry) = cached.as_ref() {
                 return deserialize_cached_response(entry, request_description);
             }
-            return Err(format!("{request_description} failed: {error}"));
+            return Err(transport_error(request_description, &error));
         }
     };
+    observe_rate_limit(&response);
     if response.status() == StatusCode::NOT_MODIFIED {
         let expires = header_value(response.headers(), EXPIRES);
         let etag = header_value(response.headers(), ETAG);
@@ -75,9 +80,12 @@ pub(super) fn cached_get_json<T: DeserializeOwned>(
             return deserialize_cached_response(entry, request_description);
         }
     }
-    let response = response
-        .error_for_status()
-        .map_err(|error| format!("{request_description} failed: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "{request_description} failed (HTTP {})",
+            response.status().as_u16()
+        ));
+    }
     let expires = header_value(response.headers(), EXPIRES);
     let etag = header_value(response.headers(), ETAG);
     let last_modified = header_value(response.headers(), LAST_MODIFIED);
@@ -85,7 +93,7 @@ pub(super) fn cached_get_json<T: DeserializeOwned>(
         .is_some_and(|value| value.to_ascii_lowercase().contains("no-store"));
     let body = response
         .bytes()
-        .map_err(|error| format!("{request_description} response body failed: {error}"))?;
+        .map_err(|_| format!("{request_description} response body could not be read"))?;
     if cacheable && allows_storage {
         if let Some(cache) = cache.as_ref() {
             let _ = cache.store(
@@ -125,6 +133,103 @@ pub(super) fn esi_limit_error(
         }
         _ => None,
     }
+}
+
+pub(super) fn observe_rate_limit(response: &reqwest::blocking::Response) {
+    let headers = response.headers();
+    let group = headers
+        .get("x-ratelimit-group")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned);
+    let request_scope = rate_limit_scope();
+    let scope = match (group, request_scope) {
+        (Some(group), Some(request_scope)) => Some(format!("{group}:{request_scope}")),
+        (Some(group), None) => Some(group),
+        (None, Some(request_scope)) => Some(request_scope),
+        (None, None) => headers
+            .contains_key("x-esi-error-limit-remain")
+            .then(|| "error-limit".to_string()),
+    };
+
+    let retry_seconds = header_value(headers, RETRY_AFTER)
+        .as_deref()
+        .and_then(parse_retry_after)
+        .or_else(|| {
+            (response.status().as_u16() == 420)
+                .then(|| numeric_header(headers, "x-esi-error-limit-reset"))
+                .flatten()
+        });
+    if let Some(seconds) = retry_seconds {
+        record_cooldown(ApiCooldown {
+            source: "esi".into(),
+            scope: scope.clone(),
+            until: unix_time().saturating_add(seconds),
+            reason: Some(if response.status().as_u16() == 420 {
+                "error limit".into()
+            } else {
+                "rate limit".into()
+            }),
+        });
+    }
+
+    let error_remaining = numeric_header(headers, "x-esi-error-limit-remain");
+    if error_remaining == Some(0) {
+        if let Some(seconds) = numeric_header(headers, "x-esi-error-limit-reset") {
+            record_cooldown(ApiCooldown {
+                source: "esi".into(),
+                scope: scope.clone().or_else(|| Some("error-limit".into())),
+                until: unix_time().saturating_add(seconds),
+                reason: Some("error budget exhausted".into()),
+            });
+        }
+    }
+
+    // ESI exposes a group/user budget. Defer the next request as the remaining
+    // share falls so a large enrichment run does not consume the whole group.
+    let limit = headers
+        .get("x-ratelimit-limit")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.split('/').next())
+        .and_then(|value| value.parse::<u64>().ok());
+    let remaining = numeric_header(headers, "x-ratelimit-remaining");
+    let delay = match limit.zip(remaining) {
+        Some((limit, remaining)) if limit > 0 && remaining * 10 <= limit => Some(2),
+        Some((limit, remaining)) if limit > 0 && remaining * 4 <= limit => Some(1),
+        _ => None,
+    };
+    if let Some(seconds) = delay {
+        record_cooldown(ApiCooldown {
+            source: "esi".into(),
+            scope,
+            until: unix_time().saturating_add(seconds),
+            reason: Some("low rate budget".into()),
+        });
+    }
+}
+
+fn numeric_header(headers: &HeaderMap, name: &'static str) -> Option<u64> {
+    headers.get(name)?.to_str().ok()?.trim().parse().ok()
+}
+
+fn parse_retry_after(value: &str) -> Option<u64> {
+    value.trim().parse().ok().or_else(|| {
+        httpdate::parse_http_date(value)
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .map(|deadline| deadline.as_secs().saturating_sub(unix_time()))
+    })
+}
+
+fn transport_error(description: &str, error: &reqwest::Error) -> String {
+    let reason = if error.is_timeout() {
+        "timed out"
+    } else if error.is_connect() {
+        "could not connect"
+    } else {
+        "transport failed"
+    };
+    format!("{description} {reason}")
 }
 
 fn deserialize_cached_response<T: DeserializeOwned>(

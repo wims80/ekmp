@@ -1,7 +1,7 @@
 use crate::models::{Killmail, Store, ZkillCacheEntry};
-use std::collections::{BTreeMap, HashMap};
-
-const NEGATIVE_CACHE_TTL_SECS: u64 = 15 * 60;
+#[cfg(any(feature = "gui", test))]
+use std::collections::BTreeMap;
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum ReportState {
@@ -20,6 +20,7 @@ pub(crate) enum ProtectionReason {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+#[cfg(any(feature = "gui", test))]
 pub(crate) struct PostingSummary {
     pub eligible_for_bulk_posting: usize,
     pub protected: usize,
@@ -53,11 +54,16 @@ pub(crate) fn protection_reasons(store: &Store, mail: &Killmail) -> Vec<Protecti
         }
     }
     if let Some(corporation_id) = mail.victim_corporation_id {
-        if let Some(character) = store.characters.iter().find(|character| {
-            character.corporation_id == Some(corporation_id) && character.corporation_name.is_some()
-        }) {
+        if let Some(character) = store
+            .characters
+            .iter()
+            .find(|character| character.corporation_id == Some(corporation_id))
+        {
             reasons.push(ProtectionReason::AuthenticatedCorporation(
-                character.corporation_name.clone().unwrap_or_default(),
+                character
+                    .corporation_name
+                    .clone()
+                    .unwrap_or_else(|| format!("Corporation {corporation_id}")),
             ));
         }
         if let Some(corporation) = store
@@ -153,6 +159,7 @@ pub(crate) fn remove_killmails_for_removed_character(
     previous_len - killmails.len()
 }
 
+#[cfg(test)]
 pub(crate) fn remove_killmails_without_authenticated_sources(
     store: &Store,
     killmails: &mut Vec<Killmail>,
@@ -165,7 +172,18 @@ pub(crate) fn remove_killmails_without_authenticated_sources(
 pub(crate) fn report_state(store: &Store, killmail_id: u64, now: u64) -> ReportState {
     match store.zkill_cache.get(&killmail_id).copied() {
         Some(entry) if entry.reported => ReportState::Reported,
-        Some(entry) if entry.is_fresh(now, NEGATIVE_CACHE_TTL_SECS) => ReportState::Unreported,
+        Some(entry)
+            if store
+                .zkill_valid_until
+                .get(&killmail_id)
+                .is_some_and(|valid_until| *valid_until > now)
+                && store
+                    .post_attempts
+                    .get(&killmail_id)
+                    .is_none_or(|attempt| entry.checked_at > attempt.attempted_at) =>
+        {
+            ReportState::Unreported
+        }
         _ => ReportState::Unknown,
     }
 }
@@ -175,6 +193,7 @@ pub(crate) fn is_bulk_candidate(store: &Store, mail: &Killmail, now: u64) -> boo
         && report_state(store, mail.id, now) == ReportState::Unreported
 }
 
+#[cfg(any(feature = "gui", test))]
 pub(crate) fn posting_summary(store: &Store, killmails: &[Killmail], now: u64) -> PostingSummary {
     let mut summary = PostingSummary {
         eligible_for_bulk_posting: 0,
@@ -208,6 +227,7 @@ pub(crate) fn posting_summary(store: &Store, killmails: &[Killmail], now: u64) -
     summary
 }
 
+#[cfg(test)]
 pub(crate) fn bulk_submission_candidates(
     store: &Store,
     mut mails: Vec<Killmail>,
@@ -217,6 +237,7 @@ pub(crate) fn bulk_submission_candidates(
     mails
 }
 
+#[cfg(test)]
 pub(crate) fn individual_submission_candidate(
     store: &Store,
     mail: Killmail,
@@ -264,16 +285,21 @@ mod tests {
         }
     }
 
+    fn cache_unreported(store: &mut Store, id: u64, checked_at: u64, valid_until: u64) {
+        store.zkill_cache.insert(
+            id,
+            ZkillCacheEntry {
+                reported: false,
+                checked_at,
+            },
+        );
+        store.zkill_valid_until.insert(id, valid_until);
+    }
+
     #[test]
     fn report_state_distinguishes_fresh_stale_and_reported_entries() {
         let mut store = store();
-        store.zkill_cache.insert(
-            1,
-            ZkillCacheEntry {
-                reported: false,
-                checked_at: 100,
-            },
-        );
+        cache_unreported(&mut store, 1, 100, 1_000);
         store.zkill_cache.insert(
             2,
             ZkillCacheEntry {
@@ -295,13 +321,7 @@ mod tests {
             id: 2,
             name: "Protected Pilot".into(),
         });
-        store.zkill_cache.insert(
-            10,
-            ZkillCacheEntry {
-                reported: false,
-                checked_at: 100,
-            },
-        );
+        cache_unreported(&mut store, 10, 100, 1_000);
         store.zkill_cache.insert(
             14,
             ZkillCacheEntry {
@@ -350,6 +370,9 @@ mod tests {
                     checked_at: 100,
                 },
             );
+            if !reported {
+                store.zkill_valid_until.insert(id, 1_000);
+            }
         }
         let killmails = [
             mail(10, &[1], None),
@@ -374,13 +397,7 @@ mod tests {
             id: 2,
             name: "Protected Pilot".into(),
         });
-        store.zkill_cache.insert(
-            10,
-            ZkillCacheEntry {
-                reported: false,
-                checked_at: 100,
-            },
-        );
+        cache_unreported(&mut store, 10, 100, 1_000);
         let protected = mail(10, &[1], Some(2));
 
         assert!(bulk_submission_candidates(&store, vec![protected.clone()], 100).is_empty());
@@ -393,13 +410,7 @@ mod tests {
 
         store.manually_protected_killmail_ids.push(11);
         let protected_by_flag = mail(11, &[1], None);
-        store.zkill_cache.insert(
-            11,
-            ZkillCacheEntry {
-                reported: false,
-                checked_at: 100,
-            },
-        );
+        cache_unreported(&mut store, 11, 100, 1_000);
 
         assert!(
             bulk_submission_candidates(&store, vec![protected_by_flag.clone()], 100).is_empty()
@@ -415,13 +426,7 @@ mod tests {
     #[test]
     fn individual_submission_requires_a_confirmed_unreported_status() {
         let mut store = store();
-        store.zkill_cache.insert(
-            10,
-            ZkillCacheEntry {
-                reported: false,
-                checked_at: 100,
-            },
-        );
+        cache_unreported(&mut store, 10, 100, 1_000);
         store.zkill_cache.insert(
             11,
             ZkillCacheEntry {
@@ -684,5 +689,21 @@ mod tests {
             &manually_protected_corporation
         ));
         assert!(is_eligible_for_bulk_posting(&store, &unrelated));
+    }
+
+    #[test]
+    fn authenticated_corporation_id_is_protected_without_a_resolved_name() {
+        let mut store = store();
+        store.characters[0].corporation_name = None;
+        let mut mail = mail(10, &[1], Some(9));
+        mail.victim_corporation_id = Some(100);
+
+        assert!(!is_eligible_for_bulk_posting(&store, &mail));
+        assert_eq!(
+            protection_reasons(&store, &mail),
+            vec![ProtectionReason::AuthenticatedCorporation(
+                "Corporation 100".into()
+            )]
+        );
     }
 }

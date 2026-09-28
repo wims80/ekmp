@@ -1,6 +1,7 @@
 pub(crate) mod auth;
 pub(crate) mod backend;
 pub(crate) mod esi;
+#[cfg(feature = "gui")]
 pub(crate) mod images;
 #[cfg(any(test, feature = "dev-tools"))]
 pub(crate) mod simulation;

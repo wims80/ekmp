@@ -6,7 +6,10 @@ use crate::{
         displayed_killmails, is_bulk_candidate, is_eligible_for_bulk_posting, report_state,
         ReportState,
     },
-    models::{Character, CharacterSource, Killmail, KillmailDetail, ProtectedVictimKind, Store},
+    models::{
+        Character, CharacterSource, Killmail, KillmailDetail, ProtectedVictimKind, Store,
+        MIN_REFRESH_INTERVAL_SECS,
+    },
 };
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
@@ -144,7 +147,7 @@ enum Config {
 }
 #[derive(Subcommand)]
 enum Setting {
-    /// Minimum time between refreshes, such as 900s, 15m, or 1h.
+    /// Minimum time between refreshes, at least 5m, such as 900s, 15m, or 1h.
     RefreshInterval {
         #[arg(value_parser = parse_interval)]
         value: Duration,
@@ -181,8 +184,13 @@ fn parse_interval(value: &str) -> Result<Duration, String> {
         .parse::<u64>()
         .ok()
         .and_then(|n| n.checked_mul(multiplier))
-        .filter(|n| *n > 0)
-        .ok_or("interval must be positive seconds, minutes (15m), or hours (1h)")?;
+        .ok_or("interval must be seconds, minutes (15m), or hours (1h)")?;
+    if seconds < MIN_REFRESH_INTERVAL_SECS {
+        return Err(format!(
+            "interval must be at least {}m",
+            MIN_REFRESH_INTERVAL_SECS / 60
+        ));
+    }
     Ok(Duration::from_secs(seconds))
 }
 
@@ -658,6 +666,13 @@ mod tests {
             assert!(parse_interval(input).is_err());
         }
         assert_eq!(parse_interval("15m").unwrap().as_secs(), 900);
+    }
+    #[test]
+    fn intervals_shorter_than_five_minutes_are_rejected() {
+        assert!(parse_interval("299").is_err());
+        assert!(parse_interval("4m").is_err());
+        assert_eq!(parse_interval("300").unwrap().as_secs(), 300);
+        assert_eq!(parse_interval("5m").unwrap().as_secs(), 300);
     }
     #[test]
     fn dev_state_requires_scenario() {

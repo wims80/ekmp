@@ -6,6 +6,7 @@ use crate::{
 use reqwest::blocking::{Client, ClientBuilder, Response};
 use serde::de::DeserializeOwned;
 use std::{
+    collections::HashSet,
     sync::{Mutex, OnceLock},
     time::Duration,
 };
@@ -84,33 +85,54 @@ pub(crate) fn retry_after_secs(value: &str, now: u64) -> Option<u64> {
         .or_else(|| http_date(value).map(|deadline| deadline.saturating_sub(now)))
 }
 
-/// API cooldowns observed during one backend operation.
+/// API cooldowns and deprecation warnings observed by one backend.
 ///
-/// Core drains the log after each backend call and persists the cooldowns. Until then, an
-/// observed cooldown also stops further requests to the same source.
+/// Core drains the log after each backend call, persisting the cooldowns and reporting the
+/// warnings. Until then, an observed cooldown also stops further requests to the same
+/// source. Each deprecation warning is reported once per backend, not once per request.
 #[derive(Default)]
-pub(crate) struct CooldownLog(Mutex<Vec<ApiCooldown>>);
+pub(crate) struct ApiLog(Mutex<Observations>);
 
-impl CooldownLog {
+#[derive(Default)]
+struct Observations {
+    cooldowns: Vec<ApiCooldown>,
+    warnings: Vec<String>,
+    warned: HashSet<String>,
+}
+
+impl ApiLog {
     pub(crate) fn record(&self, cooldown: ApiCooldown) {
-        self.lock().push(cooldown);
+        self.lock().cooldowns.push(cooldown);
     }
 
-    pub(crate) fn take(&self) -> Vec<ApiCooldown> {
-        std::mem::take(&mut *self.lock())
+    pub(crate) fn take_cooldowns(&self) -> Vec<ApiCooldown> {
+        std::mem::take(&mut self.lock().cooldowns)
+    }
+
+    /// Records `message` unless a warning with the same `key` was already recorded.
+    pub(crate) fn warn_once(&self, key: &str, message: impl FnOnce() -> String) {
+        let mut observations = self.lock();
+        if observations.warned.insert(key.to_owned()) {
+            observations.warnings.push(message());
+        }
+    }
+
+    pub(crate) fn take_warnings(&self) -> Vec<String> {
+        std::mem::take(&mut self.lock().warnings)
     }
 
     /// The remaining seconds of the longest observed cooldown for `source`.
     pub(crate) fn remaining(&self, source: &str) -> Option<u64> {
         let now = unix_time();
         self.lock()
+            .cooldowns
             .iter()
             .filter(|cooldown| cooldown.source == source && cooldown.until > now)
             .map(|cooldown| cooldown.until - now)
             .max()
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Vec<ApiCooldown>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Observations> {
         self.0
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -138,8 +160,21 @@ mod tests {
     }
 
     #[test]
+    fn warnings_are_reported_once_per_key() {
+        let log = ApiLog::default();
+
+        log.warn_once("route", || "first".into());
+        log.warn_once("route", || "repeat".into());
+        log.warn_once("other", || "second".into());
+
+        assert_eq!(log.take_warnings(), ["first", "second"]);
+        log.warn_once("route", || "after take".into());
+        assert!(log.take_warnings().is_empty());
+    }
+
+    #[test]
     fn cooldown_log_reports_the_longest_active_cooldown_until_taken() {
-        let log = CooldownLog::default();
+        let log = ApiLog::default();
         let now = unix_time();
         for (source, until) in [
             ("esi", now + 10),
@@ -155,7 +190,7 @@ mod tests {
         }
 
         assert!(log.remaining("esi").is_some_and(|seconds| seconds > 10));
-        assert_eq!(log.take().len(), 3);
+        assert_eq!(log.take_cooldowns().len(), 3);
         assert_eq!(log.remaining("esi"), None);
     }
 }

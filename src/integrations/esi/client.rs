@@ -1,8 +1,8 @@
-use super::ESI;
+use super::{COMPATIBILITY_DATE, ESI};
 use crate::{
     clock::unix_time,
     integrations::{
-        http::{self, CooldownLog},
+        http::{self, ApiLog},
         ApiError, ApiResult,
     },
     models::ApiCooldown,
@@ -12,29 +12,31 @@ use reqwest::{
     blocking::{Client, Response},
     header::{
         HeaderMap, HeaderName, CACHE_CONTROL, ETAG, EXPIRES, IF_MODIFIED_SINCE, IF_NONE_MATCH,
-        LAST_MODIFIED, RETRY_AFTER,
+        LAST_MODIFIED, RETRY_AFTER, WARNING,
     },
     StatusCode,
 };
 use serde::{de::DeserializeOwned, Serialize};
+
+const COMPATIBILITY_DATE_HEADER: &str = "X-Compatibility-Date";
 
 /// An ESI client with the local response cache and the operation's cooldown log.
 pub(super) struct Esi<'a> {
     base: &'a str,
     http: &'static Client,
     cache: Option<EsiCache>,
-    cooldowns: &'a CooldownLog,
+    cooldowns: &'a ApiLog,
 }
 
 impl<'a> Esi<'a> {
-    pub(super) fn live(cooldowns: &'a CooldownLog) -> ApiResult<Self> {
+    pub(super) fn live(cooldowns: &'a ApiLog) -> ApiResult<Self> {
         Self::new(ESI, EsiCache::open().ok(), cooldowns)
     }
 
     pub(super) fn new(
         base: &'a str,
         cache: Option<EsiCache>,
-        cooldowns: &'a CooldownLog,
+        cooldowns: &'a ApiLog,
     ) -> ApiResult<Self> {
         Ok(Self {
             base,
@@ -85,10 +87,12 @@ impl<'a> Esi<'a> {
         let response = self
             .http
             .post(self.url(path))
+            .header(COMPATIBILITY_DATE_HEADER, COMPATIBILITY_DATE)
             .json(body)
             .send()
             .map_err(|error| http::transport_error(description, &error))?;
         self.observe_rate_limit(&response, None);
+        self.observe_deprecation(&response, description);
         if let Some(error) = esi_limit_error(&response, description) {
             return Err(error);
         }
@@ -119,12 +123,18 @@ impl<'a> Esi<'a> {
         self.check_cooldown()?;
         let url = self.url(path);
         let cache = self.cache.as_ref().filter(|_| cacheable);
-        let cached = cache.and_then(|cache| cache.load(&url).ok()).flatten();
+        let cache_key = cache_key(&url);
+        let cached = cache
+            .and_then(|cache| cache.load(&cache_key).ok())
+            .flatten();
         if let Some(entry) = cached.as_ref().filter(|entry| entry.fresh) {
             return deserialize_cached_response(entry, description);
         }
 
-        let mut request = self.http.get(&url);
+        let mut request = self
+            .http
+            .get(&url)
+            .header(COMPATIBILITY_DATE_HEADER, COMPATIBILITY_DATE);
         if let Some(token) = bearer_token()? {
             request = request.bearer_auth(token);
         }
@@ -147,6 +157,7 @@ impl<'a> Esi<'a> {
             }
         };
         self.observe_rate_limit(&response, rate_limit_scope);
+        self.observe_deprecation(&response, description);
         let headers = response.headers();
         let expires = header_value(headers, EXPIRES);
         let etag = header_value(headers, ETAG);
@@ -157,7 +168,7 @@ impl<'a> Esi<'a> {
             };
             if let Some(cache) = cache {
                 let _ = cache.revalidate(
-                    &url,
+                    &cache_key,
                     expires.as_deref(),
                     etag.as_deref(),
                     last_modified.as_deref(),
@@ -185,7 +196,7 @@ impl<'a> Esi<'a> {
             .map_err(|_| format!("{description} response body could not be read"))?;
         if let Some(cache) = cache.filter(|_| allows_storage) {
             let _ = cache.store(
-                &url,
+                &cache_key,
                 &body,
                 expires.as_deref(),
                 etag.as_deref(),
@@ -194,6 +205,18 @@ impl<'a> Esi<'a> {
         }
         serde_json::from_slice(&body)
             .map_err(|error| format!("{description} response invalid: {error}").into())
+    }
+
+    /// Reports a `299` deprecation warning once per kind of request.
+    fn observe_deprecation(&self, response: &Response, description: &str) {
+        let Some(warning) = header_value(response.headers(), WARNING) else {
+            return;
+        };
+        if warning.trim_start().starts_with("299") {
+            self.cooldowns.warn_once(description, || {
+                format!("ESI reports that the {description} route is deprecated: {warning}")
+            });
+        }
     }
 
     fn observe_rate_limit(&self, response: &Response, request_scope: Option<&str>) {
@@ -260,6 +283,12 @@ impl<'a> Esi<'a> {
     }
 }
 
+/// The response-cache key for `url`. ESI varies responses by compatibility date, so the
+/// cache must too.
+pub(super) fn cache_key(url: &str) -> String {
+    format!("{url}#{COMPATIBILITY_DATE}")
+}
+
 fn esi_limit_error(response: &Response, description: &str) -> Option<ApiError> {
     let message = match response.status().as_u16() {
         420 => {
@@ -297,4 +326,84 @@ fn header_value(headers: &HeaderMap, name: HeaderName) -> Option<String> {
         .get(name)
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use httpmock::prelude::*;
+    use serde_json::Value;
+
+    #[test]
+    fn get_and_post_send_the_compatibility_date() {
+        let server = MockServer::start();
+        let get = server.mock(|when, then| {
+            when.method(GET)
+                .path("/status/")
+                .header("x-compatibility-date", COMPATIBILITY_DATE);
+            then.status(200).body("{}");
+        });
+        let post = server.mock(|when, then| {
+            when.method(POST)
+                .path("/universe/names/")
+                .header("x-compatibility-date", COMPATIBILITY_DATE);
+            then.status(200).body("[]");
+        });
+        let (base_url, log) = (server.base_url(), ApiLog::default());
+        let esi = Esi::new(&base_url, None, &log).unwrap();
+
+        esi.get::<Value>("/status/", "status").unwrap();
+        esi.post::<Value, _>("/universe/names/", &[1], "names")
+            .unwrap();
+
+        get.assert();
+        post.assert();
+    }
+
+    #[test]
+    fn deprecation_warning_is_reported_once_per_route() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/status/");
+            then.status(200)
+                .header("warning", "299 - This route is deprecated")
+                .body("{}");
+        });
+        let (base_url, log) = (server.base_url(), ApiLog::default());
+        let esi = Esi::new(&base_url, None, &log).unwrap();
+
+        esi.get::<Value>("/status/", "status").unwrap();
+        esi.get::<Value>("/status/", "status").unwrap();
+
+        let warnings = log.take_warnings();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("status route is deprecated"));
+    }
+
+    #[test]
+    fn rate_limited_response_records_a_cooldown_for_its_group() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/killmails/1/hash/");
+            then.status(429)
+                .header("retry-after", "30")
+                .header("x-ratelimit-group", "killmail")
+                .header("x-ratelimit-limit", "3600/15m")
+                .header("x-ratelimit-remaining", "0");
+        });
+        let (base_url, log) = (server.base_url(), ApiLog::default());
+        let esi = Esi::new(&base_url, None, &log).unwrap();
+
+        let result = esi.get::<Value>("/killmails/1/hash/", "killmail");
+
+        assert!(matches!(result, Err(ApiError::RateLimited(_))));
+        let cooldowns = log.take_cooldowns();
+        let longest = cooldowns
+            .iter()
+            .max_by_key(|cooldown| cooldown.until)
+            .unwrap();
+        assert_eq!(longest.source, "esi");
+        assert_eq!(longest.scope.as_deref(), Some("killmail"));
+        assert!(longest.until >= unix_time() + 29);
+    }
 }

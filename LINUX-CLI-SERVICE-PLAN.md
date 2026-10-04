@@ -171,6 +171,21 @@ Each phase can be merged on its own and passes the four checks in `AGENTS.md`.
 - Tests: send `X-Compatibility-Date`; record a 429 cooldown with the new
   `X-Ratelimit-*` headers; log the 299 warning.
 
+Done 2026-10-05. Findings from checking live ESI at compatibility date
+`2026-08-18`:
+
+- Every route ekmp uses answers on the new base URL. `/corporations/{id}/`
+  dropped `ceo_id` and replaced `tax_rate` with `tax_rates`, and
+  `/characters/{id}/` gained `achievement_score`. ekmp reads none of those
+  fields. The authenticated recent-killmails schema is unchanged in the
+  OpenAPI spec.
+- ESI sends `Vary: X-Compatibility-Date`, so the local response cache key now
+  includes the date.
+- `CooldownLog` was renamed to `ApiLog`, because it now also carries the
+  deprecation warnings.
+- A hand-edited `config.toml` with an interval under 300 s fails to load with
+  a clear error, instead of being silently clamped.
+
 ### Phase 4: Service
 
 - Move the service loop into `src/cli/service.rs`. It sleeps until

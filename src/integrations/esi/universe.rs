@@ -3,7 +3,7 @@ use super::{
     UniverseEntity, UniverseIds,
 };
 use crate::{
-    integrations::{http::CooldownLog, ApiResult},
+    integrations::{http::ApiLog, ApiResult},
     models::ProtectedVictim,
 };
 use std::sync::atomic::AtomicBool;
@@ -11,7 +11,7 @@ use std::sync::atomic::AtomicBool;
 pub fn refresh_character_affiliation(
     character: &mut Character,
     cancelled: &AtomicBool,
-    cooldowns: &CooldownLog,
+    cooldowns: &ApiLog,
 ) -> ApiResult<()> {
     check_cancelled(cancelled)?;
     let esi = Esi::live(cooldowns)?;
@@ -28,7 +28,7 @@ pub fn refresh_character_affiliation(
 pub fn resolve_protected_victim(
     kind: ProtectedVictimKind,
     query: &str,
-    cooldowns: &CooldownLog,
+    cooldowns: &ApiLog,
 ) -> ApiResult<ProtectedVictim> {
     let esi = Esi::live(cooldowns)?;
     let (id, name) = match query.parse::<u64>() {

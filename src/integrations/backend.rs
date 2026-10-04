@@ -1,5 +1,5 @@
 use crate::{
-    integrations::{auth, esi, http::CooldownLog, zkill, ApiResult},
+    integrations::{auth, esi, http::ApiLog, zkill, ApiResult},
     models::{ApiCooldown, Character, Killmail, ProtectedVictim, ProtectedVictimKind, ZkillPage},
     persistence::secrets,
 };
@@ -56,6 +56,11 @@ pub(crate) trait Backend: Send + Sync {
         Vec::new()
     }
 
+    /// API deprecation warnings observed since the last call, each reported once.
+    fn take_api_warnings(&self) -> Vec<String> {
+        Vec::new()
+    }
+
     fn request_spacing(&self) -> Duration {
         Duration::from_secs(1)
     }
@@ -63,7 +68,7 @@ pub(crate) trait Backend: Send + Sync {
 
 #[derive(Default)]
 pub(crate) struct LiveBackend {
-    cooldowns: CooldownLog,
+    cooldowns: ApiLog,
 }
 
 impl Backend for LiveBackend {
@@ -132,6 +137,10 @@ impl Backend for LiveBackend {
     }
 
     fn take_api_cooldowns(&self) -> Vec<ApiCooldown> {
-        self.cooldowns.take()
+        self.cooldowns.take_cooldowns()
+    }
+
+    fn take_api_warnings(&self) -> Vec<String> {
+        self.cooldowns.take_warnings()
     }
 }

@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub const DEFAULT_REFRESH_INTERVAL_SECS: u64 = 15 * 60;
+/// Recent killmails do not change faster than this, so shorter intervals only spend
+/// ESI and zKillboard request budget.
+pub const MIN_REFRESH_INTERVAL_SECS: u64 = 5 * 60;
 
 /// All persisted application data.
 ///

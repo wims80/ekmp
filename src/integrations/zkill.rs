@@ -1,7 +1,7 @@
 use crate::{
     clock::{http_date, unix_time},
     integrations::{
-        http::{self, CooldownLog},
+        http::{self, ApiLog},
         ApiResult,
     },
     models::{ApiCooldown, Killmail, ZkillPage},
@@ -42,7 +42,7 @@ pub fn killmail_page(
     kind: MailKind,
     character_id: u64,
     page: usize,
-    cooldowns: &CooldownLog,
+    cooldowns: &ApiLog,
 ) -> ApiResult<ZkillPage> {
     killmail_page_at(API, kind, character_id, page, cooldowns)
 }
@@ -52,7 +52,7 @@ fn killmail_page_at(
     kind: MailKind,
     character_id: u64,
     page: usize,
-    cooldowns: &CooldownLog,
+    cooldowns: &ApiLog,
 ) -> ApiResult<ZkillPage> {
     const DESCRIPTION: &str = "zKillboard lookup";
     let response = http::single_shot_client()?
@@ -82,11 +82,11 @@ fn killmail_page_at(
     })
 }
 
-pub fn post(mail: &Killmail, cooldowns: &CooldownLog) -> ApiResult<PostOutcome> {
+pub fn post(mail: &Killmail, cooldowns: &ApiLog) -> ApiResult<PostOutcome> {
     post_at(API, mail, cooldowns)
 }
 
-fn post_at(api: &str, mail: &Killmail, cooldowns: &CooldownLog) -> ApiResult<PostOutcome> {
+fn post_at(api: &str, mail: &Killmail, cooldowns: &ApiLog) -> ApiResult<PostOutcome> {
     const DESCRIPTION: &str = "zKillboard submission";
     let response = http::single_shot_client()?
         .post(format!("{api}/killmail/add/{}/{}/", mail.id, mail.hash))
@@ -111,7 +111,7 @@ fn record_retry_after(
     response: &Response,
     received_at: u64,
     scope: &str,
-    cooldowns: &CooldownLog,
+    cooldowns: &ApiLog,
 ) -> Option<u64> {
     let value = response.headers().get(RETRY_AFTER)?.to_str().ok()?;
     let seconds = http::retry_after_secs(value, received_at)?;
@@ -219,7 +219,7 @@ mod tests {
             MailKind::Kills,
             7,
             2,
-            &CooldownLog::default(),
+            &ApiLog::default(),
         )
         .unwrap();
         assert_eq!(page.entries[0].killmail_id, 42);
@@ -235,7 +235,7 @@ mod tests {
                 .path("/killmail/add/42/sentinel-secret-hash/");
             then.status(500).body("sentinel response");
         });
-        let error = post_at(&server.base_url(), &mail(), &CooldownLog::default())
+        let error = post_at(&server.base_url(), &mail(), &ApiLog::default())
             .unwrap_err()
             .to_string();
         assert_eq!(error, "zKillboard submission failed (HTTP 500)");
@@ -258,7 +258,7 @@ mod tests {
                 then.status(200)
                     .json_body(serde_json::json!({"status":"success","new":true,"url":"ignored"}));
             });
-            let error = post_at(&server.base_url(), &mail(), &CooldownLog::default())
+            let error = post_at(&server.base_url(), &mail(), &ApiLog::default())
                 .unwrap_err()
                 .to_string();
             assert!(error.contains(&format!("HTTP {status}")));

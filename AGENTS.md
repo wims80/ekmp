@@ -34,7 +34,8 @@
 - Unknown or expired-negative zKillboard statuses are refreshed for cached
   killmails at startup.
 - Use cached status information and request spacing to avoid unnecessarily
-  hammering ESI or zKillboard.
+  hammering ESI or zKillboard. Refresh intervals are at least
+  `MIN_REFRESH_INTERVAL_SECS` (5 minutes) wherever they enter.
 
 ## Architecture
 
@@ -84,9 +85,13 @@
   owns the typed `ApiError`; only its `Other` kind is recoverable, and callers
   must classify errors by kind, never by message text. `http.rs` owns the
   shared HTTP clients, user agent, transport errors, `Retry-After` parsing, and
-  the per-backend `CooldownLog` through which adapters report API cooldowns.
+  the per-backend `ApiLog` through which adapters report API cooldowns and
+  once-per-route deprecation warnings; core drains it with
+  `absorb_api_observations`.
 - `src/integrations/esi/` owns the ESI adapter: `client.rs` owns the `Esi`
-  client with cached GETs, POSTs, and rate-limit observation, `killmails.rs`
+  client with cached GETs, POSTs, rate-limit and deprecation observation, and
+  the pinned `X-Compatibility-Date` (`COMPATIBILITY_DATE` in `mod.rs`; bump it
+  only after checking every route against `types.rs`), `killmails.rs`
   assembles killmails, `universe.rs` resolves EVE identities and protected
   victims, `market.rs` estimates values, and `types.rs` contains private
   response DTOs.

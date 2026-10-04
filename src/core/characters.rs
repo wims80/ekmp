@@ -1,7 +1,7 @@
 #[cfg(feature = "gui")]
 use super::CredentialMigrationResult;
 use super::{
-    timing::{active_api_cooldown, check_cancelled, merge_api_cooldowns},
+    timing::{active_api_cooldown, check_cancelled},
     Cancellation, Core, CoreError, CoreResult, RemoveCharacterResult,
 };
 use crate::{killmail::remove_killmails_for_removed_character, models::Character};
@@ -36,7 +36,7 @@ impl Core {
                     "Character authenticated, but corporation lookup failed: {error}"
                 ));
             }
-            merge_api_cooldowns(locked.store_mut(), self.backend.take_api_cooldowns());
+            self.absorb_api_observations(locked.store_mut());
         } else {
             self.progress(
                 "Character authenticated; corporation lookup is deferred by an API cooldown",

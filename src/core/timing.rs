@@ -1,4 +1,4 @@
-use super::{store::LockedStore, CoreError, CoreResult};
+use super::{store::LockedStore, Core, CoreError, CoreResult};
 pub(super) use crate::clock::{unix_time, unix_time_millis};
 use crate::{
     models::{ApiCooldown, Store},
@@ -52,6 +52,16 @@ impl Cancellation {
 impl Default for Cancellation {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Core {
+    /// Persists the backend's observed cooldowns into `store` and reports its warnings.
+    pub(super) fn absorb_api_observations(&self, store: &mut Store) {
+        merge_api_cooldowns(store, self.backend.take_api_cooldowns());
+        for warning in self.backend.take_api_warnings() {
+            self.progress(warning);
+        }
     }
 }
 

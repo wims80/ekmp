@@ -1,5 +1,5 @@
 use super::paths::{self, create_private_dir};
-use crate::models::{Store, DEFAULT_REFRESH_INTERVAL_SECS};
+use crate::models::{Store, DEFAULT_REFRESH_INTERVAL_SECS, MIN_REFRESH_INTERVAL_SECS};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -96,6 +96,12 @@ struct Credentials {
 pub(crate) fn load(paths: &StorePaths) -> Result<Store, String> {
     let mut store: Store = read_json(&paths.state)?.unwrap_or_default();
     let config: Config = read_toml(&paths.config)?.unwrap_or_default();
+    if config.refresh_interval_secs < MIN_REFRESH_INTERVAL_SECS {
+        return Err(format!(
+            "{}: refresh-interval-secs must be at least {MIN_REFRESH_INTERVAL_SECS}",
+            paths.config.display()
+        ));
+    }
     store.refresh_interval_secs = config.refresh_interval_secs;
     store.show_protected_killmails = config.show_protected_killmails;
     let credentials: Credentials = read_json(&paths.credentials)?.unwrap_or_default();
@@ -358,6 +364,19 @@ mod tests {
         let error = load(&paths).err().unwrap();
 
         assert!(error.contains("refresh-interval"));
+        remove(&paths);
+    }
+
+    #[test]
+    fn config_refresh_interval_below_the_minimum_is_rejected() {
+        let paths = temporary_paths();
+        fs::write(&paths.config, "refresh-interval-secs = 299\n").unwrap();
+
+        let error = load(&paths).err().unwrap();
+
+        assert!(error.contains("at least 300"));
+        fs::write(&paths.config, "refresh-interval-secs = 300\n").unwrap();
+        assert_eq!(load(&paths).unwrap().refresh_interval_secs, 300);
         remove(&paths);
     }
 

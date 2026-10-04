@@ -28,8 +28,8 @@ Use `ekmp gui` to open the desktop interface in a build that includes it. The re
 | `post ID [--post-anyway] [--yes]` | Explicitly post one confirmed-unreported killmail. Protected victims require `--post-anyway`. |
 | `post --all [--yes]` | Post only confirmed, still eligible killmails. Protected victims are never included. |
 | `protect list/add/remove` | Manage character, corporation, and individual-killmail protection. |
-| `config get/set` | Manage `refresh-interval` and `show-protected-killmails`. |
-| `service run [--interval 15m]` | Run the optional foreground refresh service. |
+| `config get/set` | Manage `refresh-interval` (at least 5 minutes) and `show-protected-killmails`. |
+| `service run [--interval 15m]` | Run the optional foreground refresh service. The interval must be at least 5 minutes. |
 | `status` | Display cached counts, refresh timing, service state, and API cooldowns. |
 
 Lists use the saved protected-visibility preference. `--show-protected` and `--hide-protected` override it for one invocation. `post` verifies reporting status before confirmation. Noninteractive post and removal operations require `--yes`; they fail rather than prompting when no terminal is available.
@@ -105,6 +105,16 @@ cargo run --features dev-tools -- --scenario mixed --dev-state target/ekmp-dev-s
 The simulator preserves the same explicit submission policy as live operation. Scenario fixtures are in `dev/scenarios/`; they must contain invented IDs, hashes, names, and outcomes. See [SIMULATOR-RUNBOOK.md](SIMULATOR-RUNBOOK.md).
 
 `EGUI_INSPECTION=1` is available only in a dev-tools GUI build and only with a simulation scenario; it is rejected for live runs.
+
+## API use
+
+ekmp follows the [ESI best practices](https://developers.eveonline.com/docs/services/esi/best-practices/) and the [zKillboard API rules](https://github.com/zKillboard/zKillboard/wiki/API-(Killmails)):
+
+- Every request identifies ekmp, its version, and this repository in `User-Agent`.
+- ESI requests use `https://esi.evetech.net` with a pinned `X-Compatibility-Date`, never `/latest`. Deprecation warnings (`Warning: 299`) are reported once per route.
+- ESI responses are cached until `Expires` and revalidated with `ETag`. Rate-limit (`X-Ratelimit-*`, 429) and error-limit (420) cooldowns are persisted, so they also hold across restarts and between the CLI and the service.
+- zKillboard requests use gzip, are spaced at least one second apart across processes, and lookups are cached. Submissions are never retried automatically.
+- Refreshes run at most every 5 minutes, and only one refresh runs at a time.
 
 ## EVE notice
 

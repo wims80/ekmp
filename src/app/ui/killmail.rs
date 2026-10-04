@@ -3,7 +3,7 @@ use super::{
     theme::{
         ACCENT, ACCENT_DARK, BORDER, DANGER, MUTED, SUCCESS, SURFACE, SURFACE_RAISED, WARNING,
     },
-    IdentityImageKey, IdentityImageState, Killmail, KillmailAttacker, KillmailItem, ReportState,
+    IdentityImageKey, Images, Killmail, KillmailAttacker, KillmailItem, ReportState,
 };
 use crate::killmail::{protection_reasons, report_state};
 use eframe::egui;
@@ -13,17 +13,26 @@ pub(super) struct KillmailCardContext<'a> {
     pub(super) now: u64,
     pub(super) busy: bool,
     pub(super) protection_controls_enabled: bool,
-    pub(super) images: &'a std::collections::HashMap<IdentityImageKey, IdentityImageState>,
+    pub(super) images: &'a Images,
+}
+
+/// A user action on a killmail card.
+pub(super) enum CardAction {
+    ToggleExpanded,
+    /// Request posting. `post_anyway` is only set by a protected card's own button.
+    Post {
+        post_anyway: bool,
+    },
+    ToggleProtection,
 }
 
 pub(super) fn killmail_card(
     ui: &mut egui::Ui,
     context: &KillmailCardContext<'_>,
     mail: &Killmail,
-    mut expanded: bool,
-    post_request: &mut Option<(u64, bool)>,
-    toggle_protection: &mut Option<u64>,
-) -> bool {
+    expanded: bool,
+) -> Option<CardAction> {
+    let mut action = None;
     let protection_reasons = protection_reasons(context.store, mail);
     let protected = !protection_reasons.is_empty();
     let manually_protected = context
@@ -41,7 +50,7 @@ pub(super) fn killmail_card(
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.horizontal(|ui| {
-                let action = if expanded { "Collapse" } else { "Expand" };
+                let verb = if expanded { "Collapse" } else { "Expand" };
                 let (_rect, response) =
                     ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
                 egui::collapsing_header::paint_default_icon(
@@ -49,16 +58,16 @@ pub(super) fn killmail_card(
                     if expanded { 1.0 } else { 0.0 },
                     &response,
                 );
-                let response = response.on_hover_text(format!("{action} killmail details"));
+                let response = response.on_hover_text(format!("{verb} killmail details"));
                 response.widget_info(|| {
                     egui::WidgetInfo::labeled(
                         egui::WidgetType::Button,
                         true,
-                        format!("{action} killmail {}", mail.id),
+                        format!("{verb} killmail {}", mail.id),
                     )
                 });
                 if response.clicked() {
-                    expanded = !expanded;
+                    action = Some(CardAction::ToggleExpanded);
                 }
 
                 ui.vertical(|ui| {
@@ -124,7 +133,9 @@ pub(super) fn killmail_card(
                             accessible_label,
                         );
                         if response.clicked() {
-                            *post_request = Some((mail.id, protected));
+                            action = Some(CardAction::Post {
+                                post_anyway: protected,
+                            });
                         }
                     }
 
@@ -143,19 +154,15 @@ pub(super) fn killmail_card(
                         accessible_label,
                     );
                     if response.clicked() {
-                        *toggle_protection = Some(mail.id);
+                        action = Some(CardAction::ToggleProtection);
                     }
                 });
             }
         });
-    expanded
+    action
 }
 
-fn expanded_killmail(
-    ui: &mut egui::Ui,
-    mail: &Killmail,
-    images: &std::collections::HashMap<IdentityImageKey, IdentityImageState>,
-) {
+fn expanded_killmail(ui: &mut egui::Ui, mail: &Killmail, images: &Images) {
     let sources = mail
         .sources
         .iter()
@@ -206,14 +213,10 @@ fn expanded_killmail(
                 ui.vertical(|ui| {
                     ui.label(egui::RichText::new(&mail.victim).size(19.0).strong());
                     ui.label(egui::RichText::new(&mail.ship).strong().color(ACCENT));
-                    let organizations = [
+                    let organizations = join_present([
                         detail.victim.corporation_name.as_deref(),
                         detail.victim.alliance_name.as_deref(),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(" - ");
+                    ]);
                     if !organizations.is_empty() {
                         ui.label(egui::RichText::new(organizations).color(MUTED));
                     }
@@ -278,7 +281,7 @@ fn aggressor_pane(
     ui: &mut egui::Ui,
     damage_taken: u64,
     attackers: &[KillmailAttacker],
-    images: &std::collections::HashMap<IdentityImageKey, IdentityImageState>,
+    images: &Images,
 ) {
     let top_damage = attackers.iter().map(|attacker| attacker.damage_done).max();
     let ordered = ordered_attackers(attackers);
@@ -299,7 +302,7 @@ fn aggressor_pane(
     });
 }
 
-pub(super) fn ordered_attackers(attackers: &[KillmailAttacker]) -> Vec<&KillmailAttacker> {
+fn ordered_attackers(attackers: &[KillmailAttacker]) -> Vec<&KillmailAttacker> {
     let mut ordered = attackers.iter().collect::<Vec<_>>();
     ordered.sort_by(|left, right| {
         right
@@ -315,17 +318,12 @@ fn attacker_row(
     attacker: &KillmailAttacker,
     damage_taken: u64,
     top_damage: Option<u64>,
-    images: &std::collections::HashMap<IdentityImageKey, IdentityImageState>,
+    images: &Images,
 ) {
     ui.horizontal_top(|ui| {
-        let portrait_key = attacker
-            .character_id
-            .map(IdentityImageKey::Character)
-            .or_else(|| attacker.faction_id.map(IdentityImageKey::Corporation))
-            .or_else(|| attacker.corporation_id.map(IdentityImageKey::Corporation));
         identity_image(
             ui,
-            portrait_key.and_then(|key| images.get(&key)),
+            attacker_portrait_key(attacker).and_then(|key| images.get(&key)),
             58.0,
             '?',
             "Attacker portrait or logo",
@@ -366,14 +364,10 @@ fn attacker_row(
                     chip(ui, "TOP DAMAGE", WARNING);
                 }
             });
-            let organization = [
+            let organization = join_present([
                 attacker.corporation_name.as_deref(),
                 attacker.alliance_name.as_deref(),
-            ]
-            .into_iter()
-            .flatten()
-            .collect::<Vec<_>>()
-            .join(" - ");
+            ]);
             if !organization.is_empty() {
                 ui.label(egui::RichText::new(organization).small().color(MUTED));
             }
@@ -399,11 +393,7 @@ fn attacker_row(
     });
 }
 
-fn fitting_pane(
-    ui: &mut egui::Ui,
-    items: &[KillmailItem],
-    images: &std::collections::HashMap<IdentityImageKey, IdentityImageState>,
-) {
+fn fitting_pane(ui: &mut egui::Ui, items: &[KillmailItem], images: &Images) {
     let rows = fitting_rows(items);
     detail_pane(ui, "FITTING AND CONTENT", |ui| {
         if rows.is_empty() {
@@ -464,17 +454,17 @@ fn detail_pane(ui: &mut egui::Ui, title: &str, contents: impl FnOnce(&mut egui::
 }
 
 #[derive(Clone)]
-pub(super) struct FittingRow {
-    pub(super) section: String,
+struct FittingRow {
+    section: String,
     rank: u8,
     slot: u32,
     item_type_id: u64,
-    pub(super) name: String,
-    pub(super) destroyed: u64,
-    pub(super) dropped: u64,
+    name: String,
+    destroyed: u64,
+    dropped: u64,
 }
 
-pub(super) fn fitting_rows(items: &[KillmailItem]) -> Vec<FittingRow> {
+fn fitting_rows(items: &[KillmailItem]) -> Vec<FittingRow> {
     let mut rows = Vec::new();
     collect_fitting_rows(items, &mut rows);
     rows.sort_by(|left, right| {
@@ -549,11 +539,7 @@ pub(super) fn killmail_image_keys(mail: &Killmail) -> Vec<IdentityImageKey> {
             keys.push(IdentityImageKey::TypeRender(id));
         }
         for attacker in &detail.attackers {
-            if let Some(id) = attacker.character_id {
-                keys.push(IdentityImageKey::Character(id));
-            } else if let Some(id) = attacker.faction_id.or(attacker.corporation_id) {
-                keys.push(IdentityImageKey::Corporation(id));
-            }
+            keys.extend(attacker_portrait_key(attacker));
             if let Some(id) = attacker.ship_type_id {
                 keys.push(IdentityImageKey::TypeIcon(id));
             }
@@ -563,9 +549,27 @@ pub(super) fn killmail_image_keys(mail: &Killmail) -> Vec<IdentityImageKey> {
         }
         collect_item_image_keys(&detail.victim.items, &mut keys);
     }
-    keys.sort_by_key(|key| key.texture_name());
+    keys.sort_unstable();
     keys.dedup();
     keys
+}
+
+/// The attacker's portrait, or the logo of their faction or corporation.
+fn attacker_portrait_key(attacker: &KillmailAttacker) -> Option<IdentityImageKey> {
+    attacker
+        .character_id
+        .map(IdentityImageKey::Character)
+        .or_else(|| {
+            attacker
+                .faction_id
+                .or(attacker.corporation_id)
+                .map(IdentityImageKey::Corporation)
+        })
+}
+
+/// Joins the present names with a separator.
+fn join_present<'a>(names: impl IntoIterator<Item = Option<&'a str>>) -> String {
+    names.into_iter().flatten().collect::<Vec<_>>().join(" - ")
 }
 
 fn collect_item_image_keys(items: &[KillmailItem], keys: &mut Vec<IdentityImageKey>) {
@@ -575,7 +579,7 @@ fn collect_item_image_keys(items: &[KillmailItem], keys: &mut Vec<IdentityImageK
     }
 }
 
-pub(super) fn format_number(value: u64) -> String {
+fn format_number(value: u64) -> String {
     let digits = value.to_string();
     let mut formatted = String::with_capacity(digits.len() + digits.len() / 3);
     for (index, character) in digits.chars().enumerate() {
@@ -599,5 +603,82 @@ fn estimated_value_label(value: Option<f64>) -> String {
         format!("Est. cost {:.1}K ISK", value / 1_000.0)
     } else {
         format!("Est. cost {:.0} ISK", value)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn attacker(name: &str, damage_done: u64, final_blow: bool) -> KillmailAttacker {
+        KillmailAttacker {
+            character_id: None,
+            character_name: Some(name.into()),
+            corporation_id: None,
+            corporation_name: None,
+            alliance_id: None,
+            alliance_name: None,
+            faction_id: None,
+            faction_name: None,
+            ship_type_id: None,
+            ship_name: None,
+            weapon_type_id: None,
+            weapon_name: None,
+            damage_done,
+            final_blow,
+            security_status: None,
+        }
+    }
+
+    fn item(type_id: u64, name: &str, flag: u32, destroyed: u64, dropped: u64) -> KillmailItem {
+        KillmailItem {
+            item_type_id: type_id,
+            name: name.into(),
+            flag,
+            quantity_destroyed: destroyed,
+            quantity_dropped: dropped,
+            singleton: 0,
+            items: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn attackers_put_final_blow_before_top_damage_and_remaining_damage() {
+        let attackers = [
+            attacker("Other", 200, false),
+            attacker("Top", 900, false),
+            attacker("Final", 100, true),
+        ];
+
+        let ordered = ordered_attackers(&attackers)
+            .into_iter()
+            .map(|attacker| attacker.character_name.as_deref().unwrap())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ordered, ["Final", "Top", "Other"]);
+    }
+
+    #[test]
+    fn fitting_rows_group_slots_aggregate_quantities_and_keep_unknown_flags() {
+        let mut container = item(3, "Container", 5, 1, 0);
+        container.items.push(item(4, "Nested Cargo", 5, 2, 3));
+        let rows = fitting_rows(&[
+            item(1, "Gun", 27, 1, 0),
+            item(1, "Gun", 27, 0, 2),
+            item(2, "Future Item", 222, 1, 0),
+            container,
+        ]);
+
+        assert_eq!(rows[0].section, "High Power Slots");
+        assert_eq!(rows[0].destroyed, 1);
+        assert_eq!(rows[0].dropped, 2);
+        assert!(rows.iter().any(|row| row.name == "Nested Cargo"));
+        assert!(rows.iter().any(|row| row.section == "Other (flag 222)"));
+    }
+
+    #[test]
+    fn damage_and_quantity_formatting_is_stable() {
+        assert_eq!(format_number(0), "0");
+        assert_eq!(format_number(12_345_678), "12,345,678");
     }
 }

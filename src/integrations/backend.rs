@@ -1,6 +1,6 @@
 use crate::{
-    integrations::{auth, esi, zkill},
-    models::{ApiCooldown, Character, Killmail, ProtectedVictim, ProtectedVictimKind},
+    integrations::{auth, esi, http::CooldownLog, zkill, ApiResult},
+    models::{ApiCooldown, Character, Killmail, ProtectedVictim, ProtectedVictimKind, ZkillPage},
     persistence::secrets,
 };
 use std::{collections::HashSet, sync::atomic::AtomicBool, time::Duration};
@@ -23,38 +23,34 @@ pub(crate) trait Backend: Send + Sync {
         cancelled: &AtomicBool,
         open_browser: bool,
         on_authorization_url: &dyn Fn(&str),
-    ) -> Result<Character, String>;
+    ) -> ApiResult<Character>;
     fn refresh_character_affiliation(
         &self,
         character: &mut Character,
         cancelled: &AtomicBool,
-    ) -> Result<(), String>;
+    ) -> ApiResult<()>;
     fn load_killmails(
         &self,
         characters: &[Character],
         cached_killmails: &[Killmail],
         reported_ids: &HashSet<u64>,
         cancelled: &AtomicBool,
-        on_character_updated: &mut dyn FnMut(&Character) -> Result<(), String>,
-    ) -> Result<LoadKillmailsOutcome, String>;
+        on_character_updated: &mut dyn FnMut(&Character) -> ApiResult<()>,
+    ) -> ApiResult<LoadKillmailsOutcome>;
     fn resolve_protected_victim(
         &self,
         kind: ProtectedVictimKind,
         query: &str,
-    ) -> Result<ProtectedVictim, String>;
-    fn character_killmail_page(
+    ) -> ApiResult<ProtectedVictim>;
+    fn killmail_page(
         &self,
+        kind: zkill::MailKind,
         character_id: u64,
         page: usize,
-    ) -> Result<zkill::LookupPage, String>;
-    fn character_loss_killmail_page(
-        &self,
-        character_id: u64,
-        page: usize,
-    ) -> Result<zkill::LookupPage, String>;
-    fn post(&self, mail: &Killmail) -> Result<zkill::PostOutcome, String>;
-    fn save_refresh_token(&self, character_id: u64, token: &str) -> Result<(), String>;
-    fn delete_refresh_token(&self, character_id: u64) -> Result<(), String>;
+    ) -> ApiResult<ZkillPage>;
+    fn post(&self, mail: &Killmail) -> ApiResult<zkill::PostOutcome>;
+    fn save_refresh_token(&self, character_id: u64, token: &str) -> ApiResult<()>;
+    fn delete_refresh_token(&self, character_id: u64) -> ApiResult<()>;
 
     fn take_api_cooldowns(&self) -> Vec<ApiCooldown> {
         Vec::new()
@@ -66,7 +62,9 @@ pub(crate) trait Backend: Send + Sync {
 }
 
 #[derive(Default)]
-pub(crate) struct LiveBackend;
+pub(crate) struct LiveBackend {
+    cooldowns: CooldownLog,
+}
 
 impl Backend for LiveBackend {
     fn authenticate(
@@ -74,7 +72,7 @@ impl Backend for LiveBackend {
         cancelled: &AtomicBool,
         open_browser: bool,
         on_authorization_url: &dyn Fn(&str),
-    ) -> Result<Character, String> {
+    ) -> ApiResult<Character> {
         auth::authenticate(cancelled, open_browser, on_authorization_url)
     }
 
@@ -82,8 +80,8 @@ impl Backend for LiveBackend {
         &self,
         character: &mut Character,
         cancelled: &AtomicBool,
-    ) -> Result<(), String> {
-        esi::refresh_character_affiliation(character, cancelled)
+    ) -> ApiResult<()> {
+        esi::refresh_character_affiliation(character, cancelled, &self.cooldowns)
     }
 
     fn load_killmails(
@@ -92,13 +90,14 @@ impl Backend for LiveBackend {
         cached_killmails: &[Killmail],
         reported_ids: &HashSet<u64>,
         cancelled: &AtomicBool,
-        on_character_updated: &mut dyn FnMut(&Character) -> Result<(), String>,
-    ) -> Result<LoadKillmailsOutcome, String> {
+        on_character_updated: &mut dyn FnMut(&Character) -> ApiResult<()>,
+    ) -> ApiResult<LoadKillmailsOutcome> {
         esi::load_killmails(
             characters,
             cached_killmails,
             reported_ids,
             cancelled,
+            &self.cooldowns,
             on_character_updated,
         )
     }
@@ -107,51 +106,32 @@ impl Backend for LiveBackend {
         &self,
         kind: ProtectedVictimKind,
         query: &str,
-    ) -> Result<ProtectedVictim, String> {
-        match query.parse::<u64>() {
-            Ok(id) if id > 0 => {
-                let name = match kind {
-                    ProtectedVictimKind::Character => esi::resolve_character_name(id),
-                    ProtectedVictimKind::Corporation => esi::resolve_corporation_name(id),
-                }?;
-                Ok(ProtectedVictim { id, name })
-            }
-            _ => esi::resolve_protected_victim_name(kind, query)
-                .map(|(id, name)| ProtectedVictim { id, name }),
-        }
+    ) -> ApiResult<ProtectedVictim> {
+        esi::resolve_protected_victim(kind, query, &self.cooldowns)
     }
 
-    fn character_killmail_page(
+    fn killmail_page(
         &self,
+        kind: zkill::MailKind,
         character_id: u64,
         page: usize,
-    ) -> Result<zkill::LookupPage, String> {
-        zkill::character_killmail_page(character_id, page)
+    ) -> ApiResult<ZkillPage> {
+        zkill::killmail_page(kind, character_id, page, &self.cooldowns)
     }
 
-    fn character_loss_killmail_page(
-        &self,
-        character_id: u64,
-        page: usize,
-    ) -> Result<zkill::LookupPage, String> {
-        zkill::character_loss_killmail_page(character_id, page)
+    fn post(&self, mail: &Killmail) -> ApiResult<zkill::PostOutcome> {
+        zkill::post(mail, &self.cooldowns)
     }
 
-    fn post(&self, mail: &Killmail) -> Result<zkill::PostOutcome, String> {
-        zkill::post(mail)
+    fn save_refresh_token(&self, character_id: u64, token: &str) -> ApiResult<()> {
+        Ok(secrets::save_refresh_token(character_id, token)?)
     }
 
-    fn save_refresh_token(&self, character_id: u64, token: &str) -> Result<(), String> {
-        secrets::save_refresh_token(character_id, token)
-    }
-
-    fn delete_refresh_token(&self, character_id: u64) -> Result<(), String> {
-        secrets::delete_refresh_token(character_id)
+    fn delete_refresh_token(&self, character_id: u64) -> ApiResult<()> {
+        Ok(secrets::delete_refresh_token(character_id)?)
     }
 
     fn take_api_cooldowns(&self) -> Vec<ApiCooldown> {
-        let mut cooldowns = esi::take_api_cooldowns();
-        cooldowns.extend(zkill::take_api_cooldowns());
-        cooldowns
+        self.cooldowns.take()
     }
 }

@@ -112,7 +112,10 @@ impl Core {
         let credential_warning = if character.uses_json_refresh_token_fallback() {
             None
         } else {
-            self.backend.delete_refresh_token(id).err()
+            self.backend
+                .delete_refresh_token(id)
+                .err()
+                .map(|error| error.to_string())
         };
         self.changed();
         Ok(RemoveCharacterResult {

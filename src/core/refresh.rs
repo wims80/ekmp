@@ -4,7 +4,10 @@ use super::{
     timing::{check_cancelled, merge_api_cooldowns, unix_time},
     Cancellation, Core, CoreError, CoreResult, RefreshResult,
 };
-use crate::models::{Character, Store};
+use crate::{
+    integrations::{ApiError, ApiResult},
+    models::{Character, Store, ZkillStatus},
+};
 use std::{collections::HashSet, time::Duration};
 
 impl Core {
@@ -38,10 +41,7 @@ impl Core {
             .unwrap_or(snapshot.store.refresh_interval_secs);
         let next = refresh_not_before(&snapshot.store, interval);
         if next > now {
-            let mut result = RefreshResult::idle();
-            result.idle = false;
-            result.deferred_until = Some(next);
-            return Ok(result);
+            return Ok(RefreshResult::deferred(next));
         }
         self.refresh_with_interval(cancelled, interval)
     }
@@ -71,15 +71,7 @@ impl Core {
         let started = unix_time();
         let not_before = refresh_not_before(locked.store(), interval_secs);
         if not_before > started {
-            return Ok(RefreshResult {
-                fetched_killmails: 0,
-                reported_found: 0,
-                status_checks_incomplete: 0,
-                idle: false,
-                deferred_until: Some(not_before),
-                messages: Vec::new(),
-                has_failures: false,
-            });
+            return Ok(RefreshResult::deferred(not_before));
         }
         locked.store_mut().refresh_schedule.last_attempt_at = Some(started);
         locked.persist()?;
@@ -104,62 +96,39 @@ impl Core {
             .map(|cooldown| cooldown.until)
             .max()
             .unwrap_or(0);
-        match operation {
-            Ok(result) => {
-                if result.has_failures() {
-                    let failures = locked
-                        .store()
-                        .refresh_schedule
-                        .consecutive_failures
-                        .saturating_add(1);
-                    let backoff = refresh_backoff(failures, interval_secs);
-                    let schedule = &mut locked.store_mut().refresh_schedule;
-                    schedule.last_completed_at = Some(completed);
-                    schedule.next_eligible_at =
-                        Some(completed.saturating_add(backoff).max(active_cooldown));
-                    schedule.consecutive_failures = failures;
-                    schedule.last_error = Some(result.messages.join("; "));
-                } else {
-                    let schedule = &mut locked.store_mut().refresh_schedule;
-                    schedule.last_success_at = Some(completed);
-                    schedule.last_completed_at = Some(completed);
-                    schedule.next_eligible_at =
-                        Some(completed.saturating_add(interval_secs).max(active_cooldown));
-                    schedule.consecutive_failures = 0;
-                    schedule.last_error = None;
-                }
-                locked.persist()?;
-                self.changed();
-                Ok(result)
+        let schedule = &mut locked.store_mut().refresh_schedule;
+        schedule.last_completed_at = Some(completed);
+        let next_eligible_at = match &operation {
+            Ok(result) if !result.has_failures => {
+                schedule.last_success_at = Some(completed);
+                schedule.consecutive_failures = 0;
+                schedule.last_error = None;
+                completed.saturating_add(interval_secs)
             }
             Err(error @ CoreError::Cancelled) => {
-                let schedule = &mut locked.store_mut().refresh_schedule;
-                schedule.last_completed_at = Some(completed);
-                schedule.next_eligible_at = Some(completed.max(active_cooldown));
                 schedule.last_error = Some(error.to_string());
-                locked.persist()?;
-                Err(error)
+                completed
             }
-            Err(error) => {
-                let failures = locked
-                    .store()
-                    .refresh_schedule
-                    .consecutive_failures
-                    .saturating_add(1);
-                let backoff = refresh_backoff(failures, interval_secs);
-                let schedule = &mut locked.store_mut().refresh_schedule;
-                schedule.last_completed_at = Some(completed);
-                schedule.next_eligible_at =
-                    Some(completed.saturating_add(backoff).max(active_cooldown));
-                schedule.consecutive_failures = failures;
-                schedule.last_error = Some(error.to_string());
-                // Preserve completed partial results and the failure schedule. If this fails,
-                // report persistence as the primary error.
-                locked.persist()?;
-                self.changed();
-                Err(error)
+            failed => {
+                schedule.consecutive_failures = schedule.consecutive_failures.saturating_add(1);
+                schedule.last_error = Some(match failed {
+                    Ok(result) => result.messages.join("; "),
+                    Err(error) => error.to_string(),
+                });
+                completed.saturating_add(refresh_backoff(
+                    schedule.consecutive_failures,
+                    interval_secs,
+                ))
             }
+        };
+        schedule.next_eligible_at = Some(next_eligible_at.max(active_cooldown));
+        // Preserve completed partial results and the failure schedule. If this fails,
+        // report persistence as the primary error.
+        locked.persist()?;
+        if !matches!(operation, Err(CoreError::Cancelled)) {
+            self.changed();
         }
+        operation
     }
 
     fn perform_refresh(
@@ -186,14 +155,14 @@ impl Core {
         self.progress("Loading recent killmails from ESI");
         let reported_ids = locked
             .store()
-            .zkill_cache
+            .zkill_status
             .iter()
-            .filter_map(|(id, entry)| entry.reported.then_some(*id))
+            .filter(|(_, status)| **status == ZkillStatus::Reported)
+            .map(|(id, _)| *id)
             .collect::<HashSet<_>>();
         let characters = locked.store().characters.clone();
         let cached_killmails = locked.store().cached_killmails.clone();
-        let mut callback_persistence_error = None;
-        let mut on_character_updated = |updated: &Character| -> Result<(), String> {
+        let mut on_character_updated = |updated: &Character| -> ApiResult<()> {
             if let Some(character) = locked
                 .store_mut()
                 .characters
@@ -202,32 +171,27 @@ impl Core {
             {
                 *character = updated.clone();
             }
-            match locked.persist() {
-                Ok(()) => Ok(()),
-                Err(error) => {
-                    callback_persistence_error = Some(error);
-                    cancelled.cancel();
-                    Err("could not persist rotated character credentials".into())
-                }
-            }
+            locked.persist().map_err(|error| {
+                ApiError::Persistence(format!(
+                    "could not persist rotated character credentials: {error}"
+                ))
+            })
         };
-        let outcome = self.backend.load_killmails(
-            &characters,
-            &cached_killmails,
-            &reported_ids,
-            cancelled.as_atomic(),
-            &mut on_character_updated,
-        );
-        if let Some(error) = callback_persistence_error {
-            return Err(error);
-        }
-        let outcome = outcome.map_err(|error| {
-            if cancelled.is_cancelled() {
-                CoreError::Cancelled
-            } else {
-                CoreError::Operational(format!("could not load recent killmails: {error}"))
-            }
-        })?;
+        let outcome = self
+            .backend
+            .load_killmails(
+                &characters,
+                &cached_killmails,
+                &reported_ids,
+                cancelled.as_atomic(),
+                &mut on_character_updated,
+            )
+            .map_err(|error| match error {
+                ApiError::Persistence(_) => CoreError::from(error),
+                _ if cancelled.is_cancelled() => CoreError::Cancelled,
+                ApiError::Cancelled => CoreError::Cancelled,
+                _ => CoreError::Operational(format!("could not load recent killmails: {error}")),
+            })?;
         let fetched_killmails = outcome.killmails.len();
         let character_failures = outcome.character_failures.len();
         messages.extend(outcome.character_failures.into_iter().map(|failure| {

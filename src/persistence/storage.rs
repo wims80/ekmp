@@ -16,34 +16,27 @@ pub(crate) enum LockError {
     Io(String),
 }
 
-pub(crate) struct OperationLock {
+/// An advisory lock held until dropped.
+pub(crate) struct FileLock {
     _file: fs::File,
 }
 
-pub(crate) struct SnapshotLock {
-    _file: fs::File,
-}
-
-pub(crate) struct ServiceLock {
-    _file: fs::File,
-}
-
-pub(crate) fn try_operation_lock_for(path: &Path) -> Result<OperationLock, LockError> {
+pub(crate) fn try_operation_lock_for(path: &Path) -> Result<FileLock, LockError> {
     let file = open_lock_file(&sibling_path(path, OPERATION_LOCK_SUFFIX))?;
     file.try_lock().map_err(map_lock_error)?;
-    Ok(OperationLock { _file: file })
+    Ok(FileLock { _file: file })
 }
 
-pub(crate) fn try_snapshot_lock_for(path: &Path) -> Result<SnapshotLock, LockError> {
+pub(crate) fn try_snapshot_lock_for(path: &Path) -> Result<FileLock, LockError> {
     let file = open_lock_file(&sibling_path(path, OPERATION_LOCK_SUFFIX))?;
     file.try_lock_shared().map_err(map_lock_error)?;
-    Ok(SnapshotLock { _file: file })
+    Ok(FileLock { _file: file })
 }
 
-pub(crate) fn try_service_lock_for(path: &Path) -> Result<ServiceLock, LockError> {
+pub(crate) fn try_service_lock_for(path: &Path) -> Result<FileLock, LockError> {
     let file = open_lock_file(&sibling_path(path, SERVICE_LOCK_SUFFIX))?;
     file.try_lock().map_err(map_lock_error)?;
-    Ok(ServiceLock { _file: file })
+    Ok(FileLock { _file: file })
 }
 
 fn open_lock_file(path: &Path) -> Result<fs::File, LockError> {
@@ -202,16 +195,11 @@ fn config_dir() -> Result<PathBuf, String> {
         .ok_or("APPDATA is not set")?;
 
     #[cfg(not(windows))]
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
+    let base = std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".config"))
         .ok_or("HOME is not set")?;
 
-    #[cfg(windows)]
     let path = config_dir_path(base);
-
-    #[cfg(not(windows))]
-    let path = config_dir_path(home.join(".config"));
-
     fs::create_dir_all(&path).map_err(|error| error.to_string())?;
     Ok(path)
 }

@@ -1,11 +1,8 @@
+use super::{cache_dir, restrict_permissions};
+use crate::clock::{http_date, unix_time};
 use rusqlite::{params, Connection, OptionalExtension};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, path::Path};
 
-const CACHE_DIR_NAME: &str = "ekmp";
 const DATABASE_FILE_NAME: &str = "esi-cache.sqlite3";
 const MAX_ENTRIES: usize = 5_000;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
@@ -23,28 +20,20 @@ pub(crate) struct CachedResponse {
 
 impl EsiCache {
     pub(crate) fn open() -> Result<Self, String> {
-        Self::open_at(&cache_path()?)
+        Self::open_at(&cache_dir()?.join(DATABASE_FILE_NAME))
     }
 
-    #[cfg(test)]
     pub(crate) fn open_at(path: &Path) -> Result<Self, String> {
-        Self::open_path(path)
-    }
-
-    #[cfg(not(test))]
-    fn open_at(path: &Path) -> Result<Self, String> {
-        Self::open_path(path)
-    }
-
-    fn open_path(path: &Path) -> Result<Self, String> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
                 .map_err(|error| format!("could not create ESI cache directory: {error}"))?;
-            set_private_directory_permissions(parent)?;
+            restrict_permissions(parent, 0o700)
+                .map_err(|error| format!("could not secure ESI cache directory: {error}"))?;
         }
         let connection = Connection::open(path)
             .map_err(|error| format!("could not open ESI cache {}: {error}", path.display()))?;
-        set_private_file_permissions(path)?;
+        restrict_permissions(path, 0o600)
+            .map_err(|error| format!("could not secure ESI cache: {error}"))?;
         connection
             .execute_batch(
                 "
@@ -100,7 +89,7 @@ impl EsiCache {
         etag: Option<&str>,
         last_modified: Option<&str>,
     ) -> Result<(), String> {
-        let Some(expires_at) = expires.and_then(http_date_to_unix_time) else {
+        let Some(expires_at) = expires.and_then(http_date) else {
             return Ok(());
         };
         if body.len() > MAX_BYTES {
@@ -122,7 +111,7 @@ impl EsiCache {
                 params![key, body, expires_at, etag, last_modified, now],
             )
             .map_err(|error| format!("could not write ESI cache: {error}"))?;
-        self.prune()
+        self.prune(MAX_ENTRIES, MAX_BYTES)
     }
 
     pub(crate) fn revalidate(
@@ -132,7 +121,7 @@ impl EsiCache {
         etag: Option<&str>,
         last_modified: Option<&str>,
     ) -> Result<(), String> {
-        let Some(expires_at) = expires.and_then(http_date_to_unix_time) else {
+        let Some(expires_at) = expires.and_then(http_date) else {
             return Ok(());
         };
         self.connection
@@ -151,125 +140,37 @@ impl EsiCache {
         Ok(())
     }
 
-    fn prune(&self) -> Result<(), String> {
-        let count = self
-            .connection
-            .query_row("SELECT COUNT(*) FROM responses", [], |row| {
-                row.get::<_, usize>(0)
-            })
-            .map_err(|error| format!("could not count ESI cache entries: {error}"))?;
-        if count > MAX_ENTRIES {
-            self.connection
-                .execute(
-                    "DELETE FROM responses WHERE cache_key IN (
-                        SELECT cache_key FROM responses
-                        ORDER BY accessed_at ASC, cache_key ASC
-                        LIMIT ?1
-                    )",
-                    [count - MAX_ENTRIES],
+    /// Evicts the least recently used entries beyond the entry and byte limits.
+    fn prune(&self, max_entries: usize, max_bytes: usize) -> Result<(), String> {
+        self.connection
+            .execute(
+                "
+                DELETE FROM responses WHERE cache_key IN (
+                    SELECT cache_key FROM (
+                        SELECT
+                            cache_key,
+                            ROW_NUMBER() OVER newest AS position,
+                            SUM(length(body)) OVER newest AS retained_bytes
+                        FROM responses
+                        WINDOW newest AS (ORDER BY accessed_at DESC, cache_key DESC)
+                    )
+                    WHERE position > ?1 OR retained_bytes > ?2
                 )
-                .map_err(|error| format!("could not prune ESI cache: {error}"))?;
-        }
-
-        loop {
-            let bytes = self
-                .connection
-                .query_row(
-                    "SELECT COALESCE(SUM(length(body)), 0) FROM responses",
-                    [],
-                    |row| row.get::<_, usize>(0),
-                )
-                .map_err(|error| format!("could not measure ESI cache: {error}"))?;
-            if bytes <= MAX_BYTES {
-                return Ok(());
-            }
-            let removed = self
-                .connection
-                .execute(
-                    "DELETE FROM responses WHERE cache_key = (
-                        SELECT cache_key FROM responses ORDER BY accessed_at ASC, cache_key ASC LIMIT 1
-                    )",
-                    [],
-                )
-                .map_err(|error| format!("could not prune ESI cache: {error}"))?;
-            if removed == 0 {
-                return Ok(());
-            }
-        }
+                ",
+                params![max_entries, max_bytes],
+            )
+            .map_err(|error| format!("could not prune ESI cache: {error}"))?;
+        Ok(())
     }
-}
-
-fn cache_path() -> Result<PathBuf, String> {
-    cache_dir().map(|path| path.join(DATABASE_FILE_NAME))
-}
-
-fn cache_dir() -> Result<PathBuf, String> {
-    #[cfg(windows)]
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or("LOCALAPPDATA is not set")?;
-
-    #[cfg(target_os = "macos")]
-    let base = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or("HOME is not set")?
-        .join("Library")
-        .join("Caches");
-
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .ok_or("neither XDG_CACHE_HOME nor HOME is set")?;
-
-    Ok(base.join(CACHE_DIR_NAME))
-}
-
-fn http_date_to_unix_time(value: &str) -> Option<u64> {
-    httpdate::parse_http_date(value)
-        .ok()?
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .map(|duration| duration.as_secs())
-}
-
-fn unix_time() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-#[cfg(unix)]
-fn set_private_directory_permissions(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700))
-        .map_err(|error| format!("could not secure ESI cache directory: {error}"))
-}
-
-#[cfg(not(unix))]
-fn set_private_directory_permissions(_path: &Path) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(unix)]
-fn set_private_file_permissions(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::PermissionsExt;
-
-    fs::set_permissions(path, fs::Permissions::from_mode(0o600))
-        .map_err(|error| format!("could not secure ESI cache: {error}"))
-}
-
-#[cfg(not(unix))]
-fn set_private_file_permissions(_path: &Path) -> Result<(), String> {
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     static NEXT_TEST_DATABASE: AtomicU64 = AtomicU64::new(0);
 
@@ -322,6 +223,40 @@ mod tests {
             .load("https://esi.example/no-expiry/")
             .unwrap()
             .is_none());
+        drop(cache);
+        fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn prune_keeps_the_most_recently_used_entries_within_limits() {
+        let path = temporary_database_path();
+        let cache = EsiCache::open_at(&path).unwrap();
+        for (key, accessed_at) in [("a", 1), ("b", 2), ("c", 3), ("d", 4)] {
+            cache
+                .connection
+                .execute(
+                    "INSERT INTO responses (cache_key, body, expires_at, accessed_at)
+                     VALUES (?1, ?2, 0, ?3)",
+                    params![key, b"1234".as_slice(), accessed_at],
+                )
+                .unwrap();
+        }
+        let keys = |cache: &EsiCache| {
+            let mut statement = cache
+                .connection
+                .prepare("SELECT cache_key FROM responses ORDER BY cache_key")
+                .unwrap();
+            statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+        };
+
+        cache.prune(3, 1_000).unwrap();
+        assert_eq!(keys(&cache), ["b", "c", "d"]);
+        cache.prune(3, 8).unwrap();
+        assert_eq!(keys(&cache), ["c", "d"]);
         drop(cache);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }

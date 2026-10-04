@@ -1,7 +1,11 @@
-use crate::{models::Character, persistence::secrets};
+use crate::{
+    integrations::{http, ApiResult},
+    models::Character,
+    persistence::secrets,
+};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use rand::{rngs::OsRng, TryRngCore};
-use reqwest::{blocking::Client, Url};
+use reqwest::Url;
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -24,7 +28,7 @@ pub fn authenticate(
     cancelled: &AtomicBool,
     open_browser: bool,
     on_authorization_url: &dyn Fn(&str),
-) -> Result<Character, String> {
+) -> ApiResult<Character> {
     let mut random = OsRng;
     let mut state_bytes = [0_u8; 32];
     let mut verifier_bytes = [0_u8; 32];
@@ -62,8 +66,8 @@ pub fn authenticate(
 
 pub fn access_token(
     c: &mut Character,
-    on_character_updated: &mut dyn FnMut(&Character) -> Result<(), String>,
-) -> Result<String, String> {
+    on_character_updated: &mut dyn FnMut(&Character) -> ApiResult<()>,
+) -> ApiResult<String> {
     let refresh_token = match &c.refresh_token {
         Some(token) => token.clone(),
         None => secrets::load_refresh_token(c.id).map_err(|secure_error| {
@@ -72,7 +76,7 @@ pub fn access_token(
             )
         })?,
     };
-    let response = http_client()?
+    let response = http::client()?
         .post(format!("{SSO}/token"))
         .form(&[
             ("grant_type", "refresh_token"),
@@ -80,8 +84,8 @@ pub fn access_token(
             ("client_id", CLIENT_ID),
         ])
         .send()
-        .map_err(|error| transport_error("Token refresh", &error))?;
-    let token: Token = decode_response(response, "Token refresh")?;
+        .map_err(|error| http::transport_error("Token refresh", &error))?;
+    let token: Token = http::decode_json(response, "Token refresh")?;
     if token.refresh_token != refresh_token {
         if c.refresh_token.is_some() {
             c.refresh_token = Some(token.refresh_token.clone());
@@ -90,9 +94,7 @@ pub fn access_token(
             // token through the normal private JSON fallback path.
             c.refresh_token = Some(token.refresh_token.clone());
         }
-        on_character_updated(c).map_err(|error| {
-            format!("Persistence failure while saving rotated credentials: {error}")
-        })?;
+        on_character_updated(c)?;
     }
     Ok(token.access_token)
 }
@@ -167,8 +169,9 @@ fn check_callback_wait(cancelled: &AtomicBool, deadline: Instant) -> Result<(), 
     Ok(())
 }
 
-fn exchange_code(verifier: &str, code: &str, cancelled: &AtomicBool) -> Result<Character, String> {
-    let response = http_client()?
+fn exchange_code(verifier: &str, code: &str, cancelled: &AtomicBool) -> ApiResult<Character> {
+    let client = http::client()?;
+    let response = client
         .post(format!("{SSO}/token"))
         .form(&[
             ("grant_type", "authorization_code"),
@@ -177,17 +180,17 @@ fn exchange_code(verifier: &str, code: &str, cancelled: &AtomicBool) -> Result<C
             ("code_verifier", verifier),
         ])
         .send()
-        .map_err(|error| transport_error("Token request", &error))?;
-    let token: Token = decode_response(response, "Token request")?;
+        .map_err(|error| http::transport_error("Token request", &error))?;
+    let token: Token = http::decode_json(response, "Token request")?;
     if cancelled.load(Ordering::Relaxed) {
         return Err("Character connection cancelled".into());
     }
-    let response = http_client()?
+    let response = client
         .get("https://login.eveonline.com/oauth/verify")
         .bearer_auth(token.access_token)
         .send()
-        .map_err(|error| transport_error("Character verification request", &error))?;
-    let verify: Verify = decode_response(response, "Character verification")?;
+        .map_err(|error| http::transport_error("Character verification request", &error))?;
+    let verify: Verify = http::decode_json(response, "Character verification")?;
     Ok(Character {
         id: verify.character_id,
         name: verify.character_name,
@@ -195,38 +198,6 @@ fn exchange_code(verifier: &str, code: &str, cancelled: &AtomicBool) -> Result<C
         corporation_id: None,
         corporation_name: None,
     })
-}
-
-fn decode_response<T: for<'de> Deserialize<'de>>(
-    response: reqwest::blocking::Response,
-    operation: &str,
-) -> Result<T, String> {
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("{operation} failed ({status})"));
-    }
-    response
-        .json()
-        .map_err(|_| format!("{operation} returned an invalid response"))
-}
-
-fn http_client() -> Result<Client, String> {
-    Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|_| "Could not configure the HTTP client".to_string())
-}
-
-fn transport_error(operation: &str, error: &reqwest::Error) -> String {
-    let reason = if error.is_timeout() {
-        "timed out"
-    } else if error.is_connect() {
-        "could not connect"
-    } else {
-        "transport failed"
-    };
-    format!("{operation} {reason}")
 }
 
 #[derive(Deserialize)]

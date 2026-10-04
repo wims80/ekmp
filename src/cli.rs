@@ -1,14 +1,19 @@
+use crate::clock::unix_time;
 use crate::{
     core::{Cancellation, Core, CoreError, PostSelection},
     integrations::backend::LiveBackend,
-    killmail::{displayed_killmails, protection_reasons, report_state, ReportState},
-    models::{Killmail, ProtectedVictimKind, Store},
+    killmail::{
+        displayed_killmails, is_bulk_candidate, is_eligible_for_bulk_posting, report_state,
+        ReportState,
+    },
+    models::{Character, CharacterSource, Killmail, KillmailDetail, ProtectedVictimKind, Store},
 };
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::{
     io::{self, IsTerminal, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -47,7 +52,7 @@ enum Command {
     List,
     /// Show a cached killmail without network requests.
     Show {
-        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+        #[arg(value_parser = positive_id())]
         id: u64,
     },
     /// Explicitly submit selected confirmed-unreported killmails.
@@ -69,7 +74,7 @@ enum Characters {
         no_browser: bool,
     },
     Remove {
-        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+        #[arg(value_parser = positive_id())]
         id: u64,
         #[arg(long)]
         yes: bool,
@@ -77,7 +82,7 @@ enum Characters {
 }
 #[derive(Args)]
 struct PostArgs {
-    #[arg(required_unless_present = "all", conflicts_with = "all", value_parser = clap::value_parser!(u64).range(1..))]
+    #[arg(required_unless_present = "all", conflicts_with = "all", value_parser = positive_id())]
     id: Option<u64>,
     #[arg(long)]
     all: bool,
@@ -86,22 +91,41 @@ struct PostArgs {
     #[arg(long)]
     yes: bool,
 }
-#[derive(Clone, Copy, ValueEnum)]
-enum ProtectionKind {
-    Character,
-    Corporation,
-    Killmail,
-}
 #[derive(Subcommand)]
 enum Protect {
     List,
-    Add {
-        kind: ProtectionKind,
-        query: String,
+    #[command(subcommand)]
+    Add(ProtectAdd),
+    #[command(subcommand)]
+    Remove(ProtectRemove),
+}
+#[derive(Subcommand)]
+enum ProtectAdd {
+    /// Protect a victim character by exact name or EVE ID.
+    Character { query: String },
+    /// Protect a victim corporation by exact name or EVE ID.
+    Corporation { query: String },
+    /// Protect one cached killmail.
+    Killmail {
+        #[arg(value_parser = positive_id())]
+        id: u64,
     },
-    Remove {
-        kind: ProtectionKind,
-        #[arg(value_parser = clap::value_parser!(u64).range(1..))]
+}
+#[derive(Subcommand)]
+enum ProtectRemove {
+    /// Stop protecting a victim character.
+    Character {
+        #[arg(value_parser = positive_id())]
+        id: u64,
+    },
+    /// Stop protecting a victim corporation.
+    Corporation {
+        #[arg(value_parser = positive_id())]
+        id: u64,
+    },
+    /// Stop protecting one cached killmail.
+    Killmail {
+        #[arg(value_parser = positive_id())]
         id: u64,
     },
 }
@@ -112,8 +136,24 @@ enum ConfigKey {
 }
 #[derive(Subcommand)]
 enum Config {
-    Get { key: Option<ConfigKey> },
-    Set { key: ConfigKey, value: String },
+    Get {
+        key: Option<ConfigKey>,
+    },
+    #[command(subcommand)]
+    Set(Setting),
+}
+#[derive(Subcommand)]
+enum Setting {
+    /// Minimum time between refreshes, such as 900s, 15m, or 1h.
+    RefreshInterval {
+        #[arg(value_parser = parse_interval)]
+        value: Duration,
+    },
+    /// Whether lists include killmails with protected victims.
+    ShowProtectedKillmails {
+        #[arg(action = clap::ArgAction::Set)]
+        value: bool,
+    },
 }
 #[derive(Subcommand)]
 enum Service {
@@ -121,6 +161,10 @@ enum Service {
         #[arg(long, value_parser = parse_interval)]
         interval: Option<Duration>,
     },
+}
+
+fn positive_id() -> clap::builder::RangedU64ValueParser {
+    clap::value_parser!(u64).range(1..)
 }
 
 fn parse_interval(value: &str) -> Result<Duration, String> {
@@ -156,13 +200,9 @@ pub(crate) fn run() -> u8 {
             return code;
         }
     };
-    if let Err(message) = validate_values(&cli.command) {
-        emit_error(cli.json, &message, 2);
-        return 2;
-    }
     if matches!(cli.command, Command::Gui) {
         #[cfg(feature = "gui")]
-        let result = crate::launch_gui(cli.scenario.clone(), cli.dev_state.clone());
+        let result = crate::app::run(cli.scenario.as_deref(), cli.dev_state.as_deref());
         #[cfg(not(feature = "gui"))]
         let result: Result<(), String> =
             Err("GUI support is unavailable; install a default build".into());
@@ -212,140 +252,275 @@ pub(crate) fn run() -> u8 {
     }
 }
 
-fn validate_values(command: &Command) -> Result<(), String> {
-    match command {
-        Command::Config(Config::Set {
-            key: ConfigKey::RefreshInterval,
-            value,
-        }) => {
-            parse_interval(value)?;
-        }
-        Command::Config(Config::Set {
-            key: ConfigKey::ShowProtectedKillmails,
-            value,
-        }) => {
-            value
-                .parse::<bool>()
-                .map_err(|_| "value must be true or false")?;
-        }
-        Command::Protect(Protect::Add {
-            kind: ProtectionKind::Killmail,
-            query,
-        }) => {
-            query
-                .parse::<u64>()
-                .ok()
-                .filter(|id| *id > 0)
-                .ok_or("killmail selection requires a positive numeric ID")?;
-        }
-        _ => {}
-    }
-    Ok(())
-}
-
 fn create_core(cli: &Cli) -> Result<Core, CoreError> {
     match &cli.scenario {
-        None => Core::live(Arc::new(LiveBackend)),
+        None => Core::live(Arc::new(LiveBackend::default())),
         Some(name) => {
-            #[cfg(feature = "dev-tools")]
-            {
-                let loaded =
-                    crate::integrations::simulation::load(name).map_err(CoreError::Operational)?;
-                eprintln!("Offline simulation: {}", loaded.name);
-                let backend = Arc::new(loaded.backend);
-                if let Some(path) = &cli.dev_state {
-                    let core = Core::at_path(backend, path.clone());
-                    core.initialize(loaded.store)?;
-                    Ok(core)
-                } else {
-                    Ok(Core::in_memory(backend, loaded.store))
-                }
-            }
-            #[cfg(not(feature = "dev-tools"))]
-            {
-                Err(CoreError::Operational(format!(
-                    "scenario {name:?} requires --features dev-tools"
-                )))
-            }
+            let (core, name) = scenario_core(name, cli.dev_state.as_deref())?;
+            eprintln!("Offline simulation: {name}");
+            Ok(core)
         }
     }
 }
 
-fn execute(cli: &Cli, core: &Core, cancel: &Cancellation) -> Result<(Value, u8), CoreError> {
-    let value = match &cli.command {
-        Command::Gui => unreachable!(),
-        Command::Characters(command) => match command {
-            Characters::List => json!(core.snapshot()?.store.characters.iter().map(|c| json!({"id":c.id,"name":c.name,"corporation_id":c.corporation_id,"corporation_name":c.corporation_name})).collect::<Vec<_>>()),
-            Characters::Add { no_browser } => { let c = core.authenticate(cancel, !no_browser, &|url| eprintln!("Authorize on this machine: {url}"))?; json!({"id":c.id,"name":c.name}) },
-            Characters::Remove { id, yes } => {
-                confirm(*yes, &format!("Remove character {id}, credentials and unshared cached killmails?"), cancel)?;
-                let result = core.remove_character(*id)?;
-                let code = u8::from(result.credential_warning.is_some());
-                return Ok((serde_json::to_value(result).map_err(output_error)?, code));
+/// Builds a core for an offline scenario, optionally persisted at `dev_state`.
+///
+/// Returns the core and the scenario's display name.
+pub(crate) fn scenario_core(
+    name: &str,
+    dev_state: Option<&Path>,
+) -> Result<(Core, String), CoreError> {
+    #[cfg(feature = "dev-tools")]
+    {
+        let loaded = crate::integrations::simulation::load(name).map_err(CoreError::Operational)?;
+        let backend = Arc::new(loaded.backend);
+        let core = match dev_state {
+            Some(path) => {
+                let core = Core::at_path(backend, path.to_path_buf());
+                core.initialize(loaded.store)?;
+                core
             }
-        },
+            None => Core::in_memory(backend, loaded.store),
+        };
+        Ok((core, loaded.name))
+    }
+    #[cfg(not(feature = "dev-tools"))]
+    {
+        let _ = dev_state;
+        Err(CoreError::Operational(format!(
+            "scenario {name:?} requires --features dev-tools"
+        )))
+    }
+}
+
+/// The JSON output and exit code of a successful command.
+type Output = (Value, u8);
+
+fn execute(cli: &Cli, core: &Core, cancel: &Cancellation) -> Result<Output, CoreError> {
+    let (value, code) = match &cli.command {
+        Command::Gui => unreachable!("the GUI is launched before a core is created"),
+        Command::Characters(command) => characters(command, core, cancel)?,
         Command::Refresh => {
             let result = core.refresh(cancel)?;
-            let code = u8::from(result.has_failures());
-            return Ok((serde_json::to_value(result).map_err(output_error)?, if cancel.is_cancelled() {130} else {code}));
-        },
-        Command::List | Command::Show { .. } => {
-            let mut store = core.snapshot()?.store;
-            if cli.show_protected { store.show_protected_killmails = true; }
-            if cli.hide_protected { store.show_protected_killmails = false; }
-            let now = now();
+            let code = u8::from(result.has_failures);
+            (to_json(result)?, code)
+        }
+        Command::List => {
+            let (store, now) = (listing_store(cli, core)?, unix_time());
             let mails = displayed_killmails(&store, &store.cached_killmails, now);
-            match &cli.command {
-                Command::Show { id } => { let mail = mails.into_iter().find(|m| m.id == *id).ok_or_else(|| CoreError::Operational("killmail is missing, reported, or hidden by protection settings".into()))?; mail_output(&store, mail, now, true) },
-                _ => json!(mails.into_iter().map(|mail| mail_output(&store,mail,now,false)).collect::<Vec<_>>()),
-            }
+            let output = mails
+                .into_iter()
+                .map(|mail| mail_output(&store, mail, now, false))
+                .collect::<Vec<_>>();
+            (json!(output), 0)
         }
-        Command::Post(args) => {
-            let selection = if args.all { PostSelection::All } else { PostSelection::One { id: args.id.expect("clap requires ID"), post_anyway: args.post_anyway } };
-            let prepared = core.prepare_post(selection, cancel)?;
-            if prepared.ids.is_empty() { return Err(CoreError::Operational("no selected killmails are eligible for posting".into())); }
-            confirm(args.yes, &format!("Submit these {} killmail IDs to zKillboard: {:?}?", prepared.ids.len(), prepared.ids), cancel)?;
-            let result = match core.post(&prepared, cancel) {
-                Ok(result) => result,
-                Err(error) => {
-                    let completed = core.session_reports();
-                    if completed.is_empty() { return Err(error); }
-                    eprintln!("ekmp: {error}");
-                    let code = if cancel.is_cancelled() { 130 } else { 1 };
-                    return Ok((json!({"completed":completed,"error":error.to_string(),"exit_code":code}), code));
-                }
-            };
-            let code = if result.cancelled || cancel.is_cancelled() { 130 } else if result.has_failures() { 1 } else { 0 };
-            let value = serde_json::to_value(result).map_err(output_error)?;
-            return Ok((value, code));
+        Command::Show { id } => {
+            let (store, now) = (listing_store(cli, core)?, unix_time());
+            let mail = displayed_killmails(&store, &store.cached_killmails, now)
+                .into_iter()
+                .find(|mail| mail.id == *id)
+                .ok_or_else(|| {
+                    CoreError::Operational(
+                        "killmail is missing, reported, or hidden by protection settings".into(),
+                    )
+                })?;
+            (mail_output(&store, mail, now, true), 0)
         }
-        Command::Protect(command) => match command {
-            Protect::List => { let store = core.snapshot()?.store; json!({"characters":store.manually_protected_characters,"corporations":store.manually_protected_corporations,"killmail_ids":store.manually_protected_killmail_ids,"automatic_characters":store.characters.iter().map(|c| json!({"id":c.id,"name":c.name,"corporation_id":c.corporation_id})).collect::<Vec<_>>()}) },
-            Protect::Add { kind, query } => {
-                match kind {
-                    ProtectionKind::Killmail => { let id = query.parse().map_err(|_| CoreError::Operational("killmail selection requires a numeric ID".into()))?; core.set_killmail_protection(id, true)?; },
-                    _ => { core.add_protected_victim(victim_kind(*kind), query)?; }
-                }; json!({"protected":true})
-            },
-            Protect::Remove { kind, id } => {
-                match kind { ProtectionKind::Killmail => { core.set_killmail_protection(*id,false)?; }, _ => { core.remove_protected_victim(victim_kind(*kind),*id)?; } }; json!({"removed":true})
-            }
-        },
-        Command::Config(command) => match command {
-            Config::Get { key } => { let store = core.snapshot()?.store; match key {
-                Some(ConfigKey::RefreshInterval) => json!({"refresh_interval_secs":store.refresh_interval_secs}),
-                Some(ConfigKey::ShowProtectedKillmails) => json!({"show_protected_killmails":store.show_protected_killmails}),
-                None => json!({"refresh_interval_secs":store.refresh_interval_secs,"show_protected_killmails":store.show_protected_killmails})
-            } },
-            Config::Set { key, value } => { match key {
-                ConfigKey::RefreshInterval => core.set_refresh_interval(parse_interval(value).map_err(CoreError::Operational)?)?,
-                ConfigKey::ShowProtectedKillmails => core.set_show_protected(value.parse().map_err(|_| CoreError::Operational("value must be true or false".into()))?)?,
-            }; json!({"saved":true}) }
-        },
-        Command::Status => serde_json::to_value(core.snapshot()?.status).map_err(output_error)?,
-        Command::Service(Service::Run { interval }) => return service(core, *interval, cancel, cli.json),
+        Command::Post(args) => post(args, core, cancel)?,
+        Command::Protect(command) => (protect(command, core)?, 0),
+        Command::Config(command) => (config(command, core)?, 0),
+        Command::Status => (to_json(core.snapshot()?.status)?, 0),
+        Command::Service(Service::Run { interval }) => service(core, *interval, cancel, cli.json)?,
     };
-    Ok((value, if cancel.is_cancelled() { 130 } else { 0 }))
+    Ok((value, if cancel.is_cancelled() { 130 } else { code }))
+}
+
+#[derive(Serialize)]
+struct CharacterOutput<'a> {
+    id: u64,
+    name: &'a str,
+    corporation_id: Option<u64>,
+    corporation_name: Option<&'a str>,
+}
+
+impl<'a> From<&'a Character> for CharacterOutput<'a> {
+    fn from(character: &'a Character) -> Self {
+        Self {
+            id: character.id,
+            name: &character.name,
+            corporation_id: character.corporation_id,
+            corporation_name: character.corporation_name.as_deref(),
+        }
+    }
+}
+
+fn characters(
+    command: &Characters,
+    core: &Core,
+    cancel: &Cancellation,
+) -> Result<Output, CoreError> {
+    match command {
+        Characters::List => {
+            let store = core.snapshot()?.store;
+            let output = store
+                .characters
+                .iter()
+                .map(CharacterOutput::from)
+                .collect::<Vec<_>>();
+            Ok((json!(output), 0))
+        }
+        Characters::Add { no_browser } => {
+            let character = core.authenticate(cancel, !no_browser, &|url| {
+                eprintln!("Authorize on this machine: {url}");
+            })?;
+            Ok((json!({"id": character.id, "name": character.name}), 0))
+        }
+        Characters::Remove { id, yes } => {
+            confirm(
+                *yes,
+                &format!("Remove character {id}, credentials and unshared cached killmails?"),
+                cancel,
+            )?;
+            let result = core.remove_character(*id)?;
+            let code = u8::from(result.credential_warning.is_some());
+            Ok((to_json(result)?, code))
+        }
+    }
+}
+
+/// The stored state with this invocation's protected-visibility override applied.
+fn listing_store(cli: &Cli, core: &Core) -> Result<Store, CoreError> {
+    let mut store = core.snapshot()?.store;
+    if cli.show_protected {
+        store.show_protected_killmails = true;
+    }
+    if cli.hide_protected {
+        store.show_protected_killmails = false;
+    }
+    Ok(store)
+}
+
+fn post(args: &PostArgs, core: &Core, cancel: &Cancellation) -> Result<Output, CoreError> {
+    let selection = match args.id {
+        Some(id) if !args.all => PostSelection::One {
+            id,
+            post_anyway: args.post_anyway,
+        },
+        _ => PostSelection::All,
+    };
+    let prepared = core.prepare_post(selection, cancel)?;
+    if prepared.ids.is_empty() {
+        return Err(CoreError::Operational(
+            "no selected killmails are eligible for posting".into(),
+        ));
+    }
+    confirm(
+        args.yes,
+        &format!(
+            "Submit these {} killmail IDs to zKillboard: {:?}?",
+            prepared.ids.len(),
+            prepared.ids
+        ),
+        cancel,
+    )?;
+    let result = match core.post(&prepared, cancel) {
+        Ok(result) => result,
+        Err(error) => {
+            let completed = core.session_reports();
+            if completed.is_empty() {
+                return Err(error);
+            }
+            eprintln!("ekmp: {error}");
+            let code = if cancel.is_cancelled() { 130 } else { 1 };
+            let output =
+                json!({"completed": completed, "error": error.to_string(), "exit_code": code});
+            return Ok((output, code));
+        }
+    };
+    let code = if result.cancelled {
+        130
+    } else {
+        u8::from(result.has_failures())
+    };
+    Ok((to_json(result)?, code))
+}
+
+fn protect(command: &Protect, core: &Core) -> Result<Value, CoreError> {
+    use ProtectedVictimKind::{Character, Corporation};
+    match command {
+        Protect::List => {
+            let store = core.snapshot()?.store;
+            let automatic = store
+                .characters
+                .iter()
+                .map(|character| {
+                    json!({"id": character.id, "name": character.name, "corporation_id": character.corporation_id})
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({
+                "characters": store.manually_protected_characters,
+                "corporations": store.manually_protected_corporations,
+                "killmail_ids": store.manually_protected_killmail_ids,
+                "automatic_characters": automatic,
+            }))
+        }
+        Protect::Add(target) => {
+            match target {
+                ProtectAdd::Character { query } => {
+                    core.add_protected_victim(Character, query)?;
+                }
+                ProtectAdd::Corporation { query } => {
+                    core.add_protected_victim(Corporation, query)?;
+                }
+                ProtectAdd::Killmail { id } => core.set_killmail_protection(*id, true)?,
+            }
+            Ok(json!({"protected": true}))
+        }
+        Protect::Remove(target) => {
+            match target {
+                ProtectRemove::Character { id } => {
+                    core.remove_protected_victim(Character, *id)?;
+                }
+                ProtectRemove::Corporation { id } => {
+                    core.remove_protected_victim(Corporation, *id)?;
+                }
+                ProtectRemove::Killmail { id } => core.set_killmail_protection(*id, false)?,
+            }
+            Ok(json!({"removed": true}))
+        }
+    }
+}
+
+fn config(command: &Config, core: &Core) -> Result<Value, CoreError> {
+    match command {
+        Config::Get { key } => {
+            let store = core.snapshot()?.store;
+            Ok(match key {
+                Some(ConfigKey::RefreshInterval) => {
+                    json!({"refresh_interval_secs": store.refresh_interval_secs})
+                }
+                Some(ConfigKey::ShowProtectedKillmails) => {
+                    json!({"show_protected_killmails": store.show_protected_killmails})
+                }
+                None => json!({
+                    "refresh_interval_secs": store.refresh_interval_secs,
+                    "show_protected_killmails": store.show_protected_killmails,
+                }),
+            })
+        }
+        Config::Set(setting) => {
+            match setting {
+                Setting::RefreshInterval { value } => core.set_refresh_interval(*value)?,
+                Setting::ShowProtectedKillmails { value } => core.set_show_protected(*value)?,
+            }
+            Ok(json!({"saved": true}))
+        }
+    }
+}
+
+fn to_json(value: impl Serialize) -> Result<Value, CoreError> {
+    serde_json::to_value(value)
+        .map_err(|_| CoreError::Operational("could not encode output".into()))
 }
 
 fn service(
@@ -353,31 +528,26 @@ fn service(
     interval: Option<Duration>,
     cancel: &Cancellation,
     json_output: bool,
-) -> Result<(Value, u8), CoreError> {
+) -> Result<Output, CoreError> {
     let _guard = core.try_service_guard()?;
     eprintln!("Refresh service running; press Ctrl+C to stop.");
     while !cancel.is_cancelled() {
         match core.refresh_due(interval, cancel) {
             Ok(result) => {
                 if json_output && !result.idle && result.deferred_until.is_none() {
-                    emit(true, &serde_json::to_value(result).map_err(output_error)?);
+                    emit(true, &to_json(result)?);
                 }
             }
             Err(CoreError::Busy) => {}
             Err(CoreError::Cancelled) => break,
             Err(error) => eprintln!("Refresh deferred: {error}"),
         }
-        let delay = match core.next_refresh_delay(interval) {
-            Ok(Some(delay)) => delay.max(Duration::from_secs(1)),
-            _ => Duration::from_secs(2),
-        };
-        let delay = delay.min(Duration::from_secs(2));
-        let start = std::time::Instant::now();
-        while !cancel.is_cancelled() && start.elapsed() < delay {
-            std::thread::sleep(
-                Duration::from_millis(100).min(delay.saturating_sub(start.elapsed())),
-            );
-        }
+        let delay = core
+            .next_refresh_delay(interval)
+            .ok()
+            .flatten()
+            .unwrap_or(Duration::from_secs(2));
+        cancel.wait(delay.clamp(Duration::from_secs(1), Duration::from_secs(2)));
     }
     Ok((json!({"service":"stopped"}), 130))
 }
@@ -422,34 +592,37 @@ fn confirm(yes: bool, prompt: &str, cancel: &Cancellation) -> Result<(), CoreErr
         Err(CoreError::Cancelled)
     }
 }
-fn victim_kind(kind: ProtectionKind) -> ProtectedVictimKind {
-    match kind {
-        ProtectionKind::Character => ProtectedVictimKind::Character,
-        ProtectionKind::Corporation => ProtectedVictimKind::Corporation,
-        ProtectionKind::Killmail => unreachable!(),
-    }
-}
-fn now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-fn output_error(_: serde_json::Error) -> CoreError {
-    CoreError::Operational("could not encode output".into())
+#[derive(Serialize)]
+struct KillmailOutput<'a> {
+    id: u64,
+    sources: &'a [CharacterSource],
+    victim_id: Option<u64>,
+    victim_corporation_id: Option<u64>,
+    victim: &'a str,
+    ship: &'a str,
+    time: &'a str,
+    estimated_value_isk: Option<f64>,
+    status: ReportState,
+    protected: bool,
+    eligible_for_bulk_posting: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    detail: Option<&'a Option<KillmailDetail>>,
 }
 fn mail_output(store: &Store, mail: &Killmail, now: u64, details: bool) -> Value {
-    let status = match report_state(store, mail.id, now) {
-        ReportState::Reported => "reported",
-        ReportState::Unreported => "unreported",
-        ReportState::Unknown => "unknown",
-    };
-    let protected = !protection_reasons(store, mail).is_empty();
-    let mut value = json!({"id":mail.id,"sources":mail.sources,"victim_id":mail.victim_id,"victim_corporation_id":mail.victim_corporation_id,"victim":mail.victim,"ship":mail.ship,"time":mail.time,"estimated_value_isk":mail.estimated_value_isk,"status":status,"protected":protected,"eligible_for_bulk_posting":!protected && status == "unreported"});
-    if details {
-        value["detail"] = json!(mail.detail);
-    }
-    value
+    json!(KillmailOutput {
+        id: mail.id,
+        sources: &mail.sources,
+        victim_id: mail.victim_id,
+        victim_corporation_id: mail.victim_corporation_id,
+        victim: &mail.victim,
+        ship: &mail.ship,
+        time: &mail.time,
+        estimated_value_isk: mail.estimated_value_isk,
+        status: report_state(store, mail.id, now),
+        protected: !is_eligible_for_bulk_posting(store, mail),
+        eligible_for_bulk_posting: is_bulk_candidate(store, mail, now),
+        detail: details.then_some(&mail.detail),
+    })
 }
 fn emit(json_output: bool, value: &Value) {
     if json_output {
@@ -512,7 +685,7 @@ mod tests {
             corporation_id: None,
             corporation_name: None,
         });
-        let output = mail_output(&store, &mail, now(), true).to_string();
+        let output = mail_output(&store, &mail, unix_time(), true).to_string();
         assert!(!output.contains("sentinel"));
         assert!(!output.contains("hash"));
         assert!(!output.contains("refresh_token"));

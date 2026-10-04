@@ -6,11 +6,14 @@ use super::{
     Cancellation, Core, CoreError, CoreResult,
 };
 use crate::{
-    integrations::{backend::Backend, zkill},
+    integrations::{
+        backend::Backend,
+        zkill::{self, MailKind},
+    },
     killmail::{
         remove_reported_killmail_flags, remove_reported_killmails, report_state, ReportState,
     },
-    models::{Store, ZkillCacheEntry, ZkillQueryCacheEntry, ZkillQueryKillmail},
+    models::{Store, ZkillStatus},
 };
 use std::collections::HashSet;
 
@@ -64,11 +67,6 @@ impl Core {
         Ok(result)
     }
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum KillmailRole {
-    Kill,
-    Loss,
-}
 
 #[derive(Clone, Debug)]
 struct StatusCandidate {
@@ -80,7 +78,7 @@ struct StatusCandidate {
 struct StatusCheck {
     character_name: String,
     character_id: u64,
-    role: KillmailRole,
+    role: MailKind,
     candidates: Vec<StatusCandidate>,
 }
 
@@ -107,7 +105,7 @@ fn status_checks(store: &Store, now: u64) -> Vec<StatusCheck> {
             .filter(|mail| mail.sources.iter().any(|source| source.id == character.id));
         let (losses, kills): (Vec<_>, Vec<_>) =
             character_mails.partition(|mail| mail.victim_id == Some(character.id));
-        for (role, mails) in [(KillmailRole::Kill, kills), (KillmailRole::Loss, losses)] {
+        for (role, mails) in [(MailKind::Kills, kills), (MailKind::Losses, losses)] {
             let candidates = mails
                 .into_iter()
                 .filter(|mail| report_state(store, mail.id, now) == ReportState::Unknown)
@@ -156,24 +154,14 @@ fn lookup_status(
         check_cancelled(cancelled)?;
         let cache_key = query_cache_key(check.role, check.character_id, page_number);
         let now = unix_time();
-        let page = match locked
+        let cached = locked
             .store()
-            .zkill_query_cache
+            .zkill_pages
             .get(&cache_key)
-            .filter(|entry| entry.valid_until > now)
-        {
-            Some(cached) => zkill::LookupPage {
-                entries: cached
-                    .entries
-                    .iter()
-                    .map(|entry| zkill::KillEntry {
-                        killmail_id: entry.id,
-                        killmail_time: entry.time.clone(),
-                    })
-                    .collect(),
-                observed_at: cached.observed_at,
-                valid_until: cached.valid_until,
-            },
+            .filter(|page| page.valid_until > now)
+            .cloned();
+        let page = match cached {
+            Some(page) => page,
             None => {
                 if let Some(until) = active_api_cooldown(locked.store(), "zkillboard") {
                     return Err(CoreError::Operational(format!(
@@ -181,30 +169,11 @@ fn lookup_status(
                     )));
                 }
                 reserve_zkill_request(locked, backend.request_spacing(), cancelled)?;
-                let page = match check.role {
-                    KillmailRole::Kill => {
-                        backend.character_killmail_page(check.character_id, page_number)
-                    }
-                    KillmailRole::Loss => {
-                        backend.character_loss_killmail_page(check.character_id, page_number)
-                    }
-                }
-                .map_err(CoreError::Operational)?;
-                locked.store_mut().zkill_query_cache.insert(
-                    cache_key,
-                    ZkillQueryCacheEntry {
-                        entries: page
-                            .entries
-                            .iter()
-                            .map(|entry| ZkillQueryKillmail {
-                                id: entry.killmail_id,
-                                time: entry.killmail_time.clone(),
-                            })
-                            .collect(),
-                        observed_at: page.observed_at,
-                        valid_until: page.valid_until,
-                    },
-                );
+                let page = backend.killmail_page(check.role, check.character_id, page_number)?;
+                locked
+                    .store_mut()
+                    .zkill_pages
+                    .insert(cache_key, page.clone());
                 page
             }
         };
@@ -243,23 +212,14 @@ fn lookup_status(
 fn apply_lookup(store: &mut Store, check: &StatusCheck, lookup: &StatusLookup) {
     let now = unix_time();
     for candidate in &check.candidates {
-        if store
-            .zkill_cache
-            .get(&candidate.id)
-            .is_some_and(|entry| entry.reported)
-        {
+        let current = store.zkill_status.get(&candidate.id).copied();
+        if current == Some(ZkillStatus::Reported) {
             continue;
         }
         if lookup.reported.contains(&candidate.id) {
-            store.zkill_cache.insert(
-                candidate.id,
-                ZkillCacheEntry {
-                    reported: true,
-                    checked_at: lookup.observed_at,
-                },
-            );
-            store.zkill_valid_until.remove(&candidate.id);
-            store.post_attempts.remove(&candidate.id);
+            store
+                .zkill_status
+                .insert(candidate.id, ZkillStatus::Reported);
             continue;
         }
         if !lookup.complete || lookup.valid_until <= now {
@@ -275,39 +235,29 @@ fn apply_lookup(store: &mut Store, check: &StatusCheck, lookup: &StatusLookup) {
         {
             continue;
         }
-        if store
-            .post_attempts
-            .get(&candidate.id)
-            .is_some_and(|attempt| lookup.observed_at <= attempt.attempted_at)
-        {
-            continue;
+        // Absence only disproves an uncertain submission when observed after it.
+        if let Some(ZkillStatus::PostAttempted { attempted_at }) = current {
+            if lookup.observed_at <= attempted_at {
+                continue;
+            }
         }
-        store.zkill_cache.insert(
+        store.zkill_status.insert(
             candidate.id,
-            ZkillCacheEntry {
-                reported: false,
-                checked_at: lookup.observed_at,
+            ZkillStatus::Unreported {
+                valid_until: lookup.valid_until,
             },
         );
-        store
-            .zkill_valid_until
-            .insert(candidate.id, lookup.valid_until);
-        store.post_attempts.remove(&candidate.id);
     }
 }
 
-fn query_cache_key(role: KillmailRole, character_id: u64, page: usize) -> String {
-    let role = match role {
-        KillmailRole::Kill => "kills",
-        KillmailRole::Loss => "losses",
-    };
-    format!("{role}:{character_id}:{page}")
+fn query_cache_key(role: MailKind, character_id: u64, page: usize) -> String {
+    format!("{}:{character_id}:{page}", role.path_segment())
 }
 
 pub(super) fn prune_reported(store: &mut Store) {
-    remove_reported_killmails(&store.zkill_cache, &mut store.cached_killmails);
+    remove_reported_killmails(&store.zkill_status, &mut store.cached_killmails);
     remove_reported_killmail_flags(
-        &store.zkill_cache,
+        &store.zkill_status,
         &mut store.manually_protected_killmail_ids,
     );
 }
@@ -349,24 +299,18 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> Option<i64> {
 mod tests {
     use super::*;
     use crate::core::test_support::*;
-    use crate::models::PostAttempt;
+    use crate::models::{ZkillEntry, ZkillPage};
     use std::sync::{atomic::Ordering, Arc};
 
     #[test]
     fn absent_shared_source_lookup_never_overwrites_positive_status() {
         let now = unix_time();
         let mut store = Store::default();
-        store.zkill_cache.insert(
-            42,
-            ZkillCacheEntry {
-                reported: true,
-                checked_at: now - 10,
-            },
-        );
+        store.zkill_status.insert(42, ZkillStatus::Reported);
         let check = StatusCheck {
             character_name: "Other source".into(),
             character_id: 2,
-            role: KillmailRole::Kill,
+            role: MailKind::Kills,
             candidates: vec![StatusCandidate {
                 id: 42,
                 time: "2020-01-01T00:00:00Z".into(),
@@ -383,7 +327,7 @@ mod tests {
             },
         );
 
-        assert!(store.zkill_cache[&42].reported);
+        assert_eq!(store.zkill_status[&42], ZkillStatus::Reported);
     }
 
     #[test]
@@ -392,7 +336,7 @@ mod tests {
         let check = StatusCheck {
             character_name: "Pilot".into(),
             character_id: 1,
-            role: KillmailRole::Kill,
+            role: MailKind::Kills,
             candidates: vec![StatusCandidate {
                 id: 42,
                 time: "2020-01-01T00:00:00Z".into(),
@@ -400,8 +344,8 @@ mod tests {
         };
         let mut store = Store::default();
         store
-            .post_attempts
-            .insert(42, PostAttempt { attempted_at: now });
+            .zkill_status
+            .insert(42, ZkillStatus::PostAttempted { attempted_at: now });
         let mut lookup = StatusLookup {
             reported: HashSet::new(),
             complete: true,
@@ -415,7 +359,6 @@ mod tests {
         lookup.observed_at += 1;
         apply_lookup(&mut store, &check, &lookup);
         assert_eq!(report_state(&store, 42, now), ReportState::Unreported);
-        assert!(!store.post_attempts.contains_key(&42));
     }
 
     #[test]
@@ -424,7 +367,7 @@ mod tests {
         let check = StatusCheck {
             character_name: "Pilot".into(),
             character_id: 1,
-            role: KillmailRole::Kill,
+            role: MailKind::Kills,
             candidates: vec![StatusCandidate {
                 id: 42,
                 time: "9999-01-01T00:00:00Z".into(),
@@ -451,7 +394,7 @@ mod tests {
         let check = StatusCheck {
             character_name: "Pilot".into(),
             character_id: 1,
-            role: KillmailRole::Kill,
+            role: MailKind::Kills,
             candidates: vec![StatusCandidate {
                 id: 42,
                 time: "2020-01-01T00:00:00Z".into(),
@@ -478,12 +421,11 @@ mod tests {
         let now = unix_time();
         let backend = Arc::new(TestBackend::new());
         let mut store = postable_store();
-        store.zkill_cache.remove(&42);
-        store.zkill_valid_until.remove(&42);
+        store.zkill_status.remove(&42);
         let original_expiry = now + 600;
-        store.zkill_query_cache.insert(
-            query_cache_key(KillmailRole::Kill, 1, 1),
-            ZkillQueryCacheEntry {
+        store.zkill_pages.insert(
+            query_cache_key(MailKind::Kills, 1, 1),
+            ZkillPage {
                 entries: Vec::new(),
                 observed_at: now,
                 valid_until: original_expiry,
@@ -502,7 +444,7 @@ mod tests {
         assert_eq!(
             locked
                 .store()
-                .zkill_query_cache
+                .zkill_pages
                 .values()
                 .next()
                 .unwrap()
@@ -516,15 +458,14 @@ mod tests {
         let now = unix_time();
         let backend = Arc::new(TestBackend::new());
         let mut store = postable_store();
-        store.zkill_cache.remove(&42);
-        store.zkill_valid_until.remove(&42);
-        store.zkill_query_cache.insert(
-            query_cache_key(KillmailRole::Kill, 1, 1),
-            ZkillQueryCacheEntry {
+        store.zkill_status.remove(&42);
+        store.zkill_pages.insert(
+            query_cache_key(MailKind::Kills, 1, 1),
+            ZkillPage {
                 entries: vec![
-                    ZkillQueryKillmail {
-                        id: 9_999,
-                        time: "2021-01-01T00:00:00Z".into(),
+                    ZkillEntry {
+                        killmail_id: 9_999,
+                        killmail_time: "2021-01-01T00:00:00Z".into(),
                     };
                     zkill::KILLMAILS_PER_PAGE
                 ],
@@ -532,9 +473,9 @@ mod tests {
                 valid_until: now + 500,
             },
         );
-        store.zkill_query_cache.insert(
-            query_cache_key(KillmailRole::Kill, 1, 2),
-            ZkillQueryCacheEntry {
+        store.zkill_pages.insert(
+            query_cache_key(MailKind::Kills, 1, 2),
+            ZkillPage {
                 entries: Vec::new(),
                 observed_at: now,
                 valid_until: now + 400,
@@ -558,14 +499,14 @@ mod tests {
         let now = unix_time();
         let mut original = Store::default();
         original
-            .post_attempts
-            .insert(42, PostAttempt { attempted_at: now });
+            .zkill_status
+            .insert(42, ZkillStatus::PostAttempted { attempted_at: now });
         let encoded = serde_json::to_vec(&original).unwrap();
         let mut restored: Store = serde_json::from_slice(&encoded).unwrap();
         let check = StatusCheck {
             character_name: "Pilot".into(),
             character_id: 1,
-            role: KillmailRole::Kill,
+            role: MailKind::Kills,
             candidates: vec![StatusCandidate {
                 id: 42,
                 time: "2020-01-01T00:00:00Z".into(),
@@ -584,7 +525,10 @@ mod tests {
         );
 
         assert_eq!(report_state(&restored, 42, now), ReportState::Unknown);
-        assert!(restored.post_attempts.contains_key(&42));
+        assert_eq!(
+            restored.zkill_status[&42],
+            ZkillStatus::PostAttempted { attempted_at: now }
+        );
     }
 
     #[test]
@@ -600,7 +544,7 @@ mod tests {
         let at_boundary = StatusCheck {
             character_name: "Pilot".into(),
             character_id: 1,
-            role: KillmailRole::Kill,
+            role: MailKind::Kills,
             candidates: vec![StatusCandidate {
                 id: 42,
                 time: "2099-01-01T00:00:00Z".into(),

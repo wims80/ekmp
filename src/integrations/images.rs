@@ -1,14 +1,8 @@
-use reqwest::{blocking::Client, header::USER_AGENT};
-use std::time::Duration;
+use super::{http, ApiResult};
 
 const IMAGE_SERVICE: &str = "https://images.evetech.net";
-const USER_AGENT_VALUE: &str = concat!(
-    "ekmp/",
-    env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/wims80/ekmp)"
-);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum IdentityImageKey {
     Character(u64),
     Corporation(u64),
@@ -53,34 +47,19 @@ impl IdentityImageKey {
     }
 }
 
-pub(crate) fn fetch(key: IdentityImageKey) -> Result<Vec<u8>, String> {
-    let response = Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|_| "Could not configure the image HTTP client".to_string())?
+pub(crate) fn fetch(key: IdentityImageKey) -> ApiResult<Vec<u8>> {
+    const DESCRIPTION: &str = "EVE image request";
+    let response = http::client()?
         .get(key.url())
-        .header(USER_AGENT, USER_AGENT_VALUE)
         .send()
-        .map_err(|error| {
-            if error.is_timeout() {
-                "EVE image request timed out".to_string()
-            } else if error.is_connect() {
-                "EVE image request could not connect".to_string()
-            } else {
-                "EVE image request transport failed".to_string()
-            }
-        })?;
+        .map_err(|error| http::transport_error(DESCRIPTION, &error))?;
     if !response.status().is_success() {
-        return Err(format!(
-            "EVE image request failed (HTTP {})",
-            response.status().as_u16()
-        ));
+        return Err(format!("{DESCRIPTION} failed (HTTP {})", response.status().as_u16()).into());
     }
     response
         .bytes()
         .map(|bytes| bytes.to_vec())
-        .map_err(|_| "EVE image response could not be read".to_string())
+        .map_err(|_| "EVE image response could not be read".into())
 }
 
 #[cfg(test)]

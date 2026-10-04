@@ -1,5 +1,6 @@
 use eframe::egui;
 
+pub(super) const BACKGROUND: egui::Color32 = egui::Color32::from_rgb(14, 19, 24);
 pub(super) const ACCENT: egui::Color32 = egui::Color32::from_rgb(72, 181, 196);
 pub(super) const ACCENT_DARK: egui::Color32 = egui::Color32::from_rgb(35, 112, 124);
 pub(super) const SURFACE: egui::Color32 = egui::Color32::from_rgb(21, 27, 34);
@@ -12,7 +13,7 @@ pub(super) const DANGER: egui::Color32 = egui::Color32::from_rgb(224, 112, 112);
 
 pub(super) fn apply_theme(ctx: &egui::Context) {
     let mut visuals = egui::Visuals::dark();
-    visuals.panel_fill = egui::Color32::from_rgb(14, 19, 24);
+    visuals.panel_fill = BACKGROUND;
     visuals.window_fill = SURFACE;
     visuals.faint_bg_color = SURFACE_RAISED;
     visuals.extreme_bg_color = egui::Color32::from_rgb(10, 14, 18);
@@ -33,4 +34,12 @@ pub(super) fn apply_theme(ctx: &egui::Context) {
     style.spacing.button_padding = egui::vec2(14.0, 8.0);
     style.spacing.interact_size.y = 34.0;
     ctx.set_style_of(egui::Theme::Dark, style);
+}
+
+/// Overrides the proportional font size of each listed text style within `ui`.
+pub(super) fn set_text_sizes(ui: &mut egui::Ui, sizes: &[(egui::TextStyle, f32)]) {
+    let text_styles = &mut ui.style_mut().text_styles;
+    for (style, size) in sizes {
+        text_styles.insert(style.clone(), egui::FontId::proportional(*size));
+    }
 }

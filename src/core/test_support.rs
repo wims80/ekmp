@@ -2,10 +2,11 @@ use super::{timing::unix_time, Cancellation};
 use crate::{
     integrations::{
         backend::{Backend, LoadKillmailsOutcome},
-        zkill,
+        zkill, ApiResult,
     },
     models::{
-        Character, CharacterSource, ProtectedVictim, ProtectedVictimKind, Store, ZkillCacheEntry,
+        Character, CharacterSource, ProtectedVictim, ProtectedVictimKind, Store, ZkillPage,
+        ZkillStatus,
     },
 };
 use std::{
@@ -43,7 +44,7 @@ impl Backend for TestBackend {
         _cancelled: &AtomicBool,
         _open_browser: bool,
         _on_authorization_url: &dyn Fn(&str),
-    ) -> Result<Character, String> {
+    ) -> ApiResult<Character> {
         self.authenticated
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -55,7 +56,7 @@ impl Backend for TestBackend {
         &self,
         _character: &mut Character,
         _cancelled: &AtomicBool,
-    ) -> Result<(), String> {
+    ) -> ApiResult<()> {
         Ok(())
     }
 
@@ -65,8 +66,8 @@ impl Backend for TestBackend {
         cached_killmails: &[crate::models::Killmail],
         _reported_ids: &HashSet<u64>,
         _cancelled: &AtomicBool,
-        _on_character_updated: &mut dyn FnMut(&Character) -> Result<(), String>,
-    ) -> Result<LoadKillmailsOutcome, String> {
+        _on_character_updated: &mut dyn FnMut(&Character) -> ApiResult<()>,
+    ) -> ApiResult<LoadKillmailsOutcome> {
         Ok(LoadKillmailsOutcome {
             killmails: cached_killmails.to_vec(),
             character_failures: Vec::new(),
@@ -77,7 +78,7 @@ impl Backend for TestBackend {
         &self,
         kind: ProtectedVictimKind,
         query: &str,
-    ) -> Result<ProtectedVictim, String> {
+    ) -> ApiResult<ProtectedVictim> {
         Ok(ProtectedVictim {
             id: query.parse().unwrap_or(2),
             name: match kind {
@@ -88,25 +89,17 @@ impl Backend for TestBackend {
         })
     }
 
-    fn character_killmail_page(
+    fn killmail_page(
         &self,
+        _kind: zkill::MailKind,
         _character_id: u64,
         _page: usize,
-    ) -> Result<zkill::LookupPage, String> {
+    ) -> ApiResult<ZkillPage> {
         self.lookups.fetch_add(1, Ordering::Relaxed);
         Ok(empty_page())
     }
 
-    fn character_loss_killmail_page(
-        &self,
-        _character_id: u64,
-        _page: usize,
-    ) -> Result<zkill::LookupPage, String> {
-        self.lookups.fetch_add(1, Ordering::Relaxed);
-        Ok(empty_page())
-    }
-
-    fn post(&self, mail: &crate::models::Killmail) -> Result<zkill::PostOutcome, String> {
+    fn post(&self, mail: &crate::models::Killmail) -> ApiResult<zkill::PostOutcome> {
         self.posts.fetch_add(1, Ordering::Relaxed);
         if let Some(cancellation) = self
             .cancel_after_post
@@ -122,11 +115,11 @@ impl Backend for TestBackend {
         })
     }
 
-    fn save_refresh_token(&self, _character_id: u64, _token: &str) -> Result<(), String> {
+    fn save_refresh_token(&self, _character_id: u64, _token: &str) -> ApiResult<()> {
         Ok(())
     }
 
-    fn delete_refresh_token(&self, _character_id: u64) -> Result<(), String> {
+    fn delete_refresh_token(&self, _character_id: u64) -> ApiResult<()> {
         Ok(())
     }
 
@@ -135,9 +128,9 @@ impl Backend for TestBackend {
     }
 }
 
-pub(super) fn empty_page() -> zkill::LookupPage {
+pub(super) fn empty_page() -> ZkillPage {
     let now = unix_time();
-    zkill::LookupPage {
+    ZkillPage {
         entries: Vec::new(),
         observed_at: now,
         valid_until: now + 3_600,
@@ -175,13 +168,11 @@ pub(super) fn postable_store() -> Store {
         cached_killmails: vec![mail(42)],
         ..Store::default()
     };
-    store.zkill_cache.insert(
+    store.zkill_status.insert(
         42,
-        ZkillCacheEntry {
-            reported: false,
-            checked_at: now,
+        ZkillStatus::Unreported {
+            valid_until: now + 3_600,
         },
     );
-    store.zkill_valid_until.insert(42, now + 3_600);
     store
 }

@@ -1,81 +1,49 @@
+use crate::clock::unix_time;
 mod operations;
 mod ui;
 mod worker;
 
 use crate::{
-    core::{
-        Core, CoreError, CoreEvent, CredentialMigrationResult, PostBatchResult, PreparedPost,
-        RefreshResult, RemoveCharacterResult, SessionReport, Snapshot, StatusSnapshot,
-    },
+    core::{Core, CoreError, CoreEvent, PreparedPost, SessionReport, Snapshot, StatusSnapshot},
     integrations::backend::{Backend, LiveBackend},
-    models::{Character, ProtectedVictim, ProtectedVictimKind, Store},
+    models::{Character, ProtectedVictimKind, Store},
 };
 use eframe::egui;
-#[cfg(any(test, feature = "dev-tools"))]
-use std::path::PathBuf;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
+    path::Path,
     sync::{mpsc::Receiver, Arc},
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 use worker::{IdentityImageEvent, IdentityImageKey};
 
 const STATUS_HISTORY_LIMIT: usize = 200;
 const SNAPSHOT_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
-#[derive(Clone, Copy)]
-enum Operation {
-    Authenticate,
-    MigrateRefreshTokens,
-    RemoveCharacter,
-    Refresh,
-    AddProtectedVictim,
-    RemoveProtectedVictim,
-    SetShowProtected,
-    SetKillmailProtection,
-    PreparePost,
-    Post,
-}
-
 struct PendingCharacterRemoval {
     id: u64,
     name: String,
 }
 
+/// The GUI update applied when an operation succeeds.
+type Completion = Box<dyn FnOnce(&mut App) + Send>;
+
 struct ActiveOperation {
-    kind: Operation,
+    /// Status shown while the operation runs.
+    label: &'static str,
     updates: Receiver<OperationUpdate>,
-    cancellation: Option<crate::core::Cancellation>,
-    cancellation_requested: bool,
+    cancellation: crate::core::Cancellation,
+    /// Button text when the user may cancel this operation.
+    cancel_label: Option<&'static str>,
 }
 
 enum OperationUpdate {
     AuthorizationUrl(String),
-    Completed(Result<OperationOutcome, CoreError>),
+    Completed(Result<Completion, CoreError>),
 }
 
-enum OperationOutcome {
-    Authenticated(Character),
-    RefreshTokensMigrated(CredentialMigrationResult),
-    CharacterRemoved(RemoveCharacterResult),
-    Refreshed(RefreshResult),
-    ProtectedVictimAdded {
-        kind: ProtectedVictimKind,
-        victim: ProtectedVictim,
-    },
-    ProtectedVictimRemoved {
-        kind: ProtectedVictimKind,
-        id: u64,
-        removed: bool,
-    },
-    ShowProtectedSet(bool),
-    KillmailProtectionSet {
-        id: u64,
-        protected: bool,
-    },
-    PostPrepared(PreparedPost),
-    Posted(PostBatchResult),
-}
+/// Loaded identity images by key.
+type Images = HashMap<IdentityImageKey, IdentityImageState>;
 
 enum IdentityImageState {
     Loading,
@@ -104,14 +72,14 @@ pub struct App {
     persistence_blocked: Option<String>,
     identity_image_requests: std::sync::mpsc::Sender<IdentityImageKey>,
     identity_image_events: Receiver<IdentityImageEvent>,
-    identity_images: HashMap<IdentityImageKey, IdentityImageState>,
+    identity_images: Images,
     simulation_name: Option<String>,
     run_jobs_inline: bool,
 }
 
 impl App {
     pub fn new() -> Self {
-        let backend: Arc<dyn Backend> = Arc::new(LiveBackend);
+        let backend: Arc<dyn Backend> = Arc::new(LiveBackend::default());
         let (core, persistence_blocked) = match Core::live(Arc::clone(&backend)) {
             Ok(core) => (core, None),
             Err(error) => (
@@ -122,27 +90,13 @@ impl App {
         Self::build(core, persistence_blocked, None, false)
     }
 
-    #[cfg(any(test, feature = "dev-tools"))]
-    pub(crate) fn simulated(
-        store: Store,
-        backend: Arc<dyn Backend>,
-        scenario_name: String,
-        state_path: Option<PathBuf>,
-        run_jobs_inline: bool,
-    ) -> Self {
-        let (core, persistence_blocked) = match state_path {
-            Some(path) => {
-                let core = Core::at_path(backend, path);
-                let error = core.initialize(store).err().map(|error| error.to_string());
-                (core, error)
-            }
-            None => (Core::in_memory(backend, store), None),
-        };
+    #[cfg(test)]
+    fn simulated(store: Store, backend: Arc<dyn Backend>, scenario_name: String) -> Self {
         Self::build(
-            core,
-            persistence_blocked,
+            Core::in_memory(backend, store),
+            None,
             Some(scenario_name),
-            run_jobs_inline,
+            true,
         )
     }
 
@@ -154,10 +108,9 @@ impl App {
     ) -> Self {
         let (core_event_tx, core_events) = std::sync::mpsc::channel();
         let core = core.with_events(core_event_tx);
-        let fallback_snapshot = || {
-            Core::in_memory(Arc::new(LiveBackend), Store::default())
-                .snapshot()
-                .expect("an in-memory default snapshot must load")
+        let fallback_snapshot = || Snapshot {
+            store: Store::default(),
+            status: StatusSnapshot::default(),
         };
         let (snapshot, refresh_after_snapshot) = match core.snapshot() {
             Ok(snapshot) => (snapshot, false),
@@ -213,27 +166,9 @@ impl App {
         self.active_operation.is_some()
     }
 
-    fn is_authenticating(&self) -> bool {
-        self.active_operation
-            .as_ref()
-            .is_some_and(|operation| matches!(operation.kind, Operation::Authenticate))
-    }
-
     fn status_pill_text(&self) -> String {
         if let Some(active) = &self.active_operation {
-            return match active.kind {
-                Operation::Authenticate => "Waiting for EVE authorization".into(),
-                Operation::MigrateRefreshTokens => "Securing character credentials".into(),
-                Operation::RemoveCharacter => "Disconnecting character".into(),
-                Operation::Refresh => "Loading recent killmails".into(),
-                Operation::AddProtectedVictim => "Adding protected victim".into(),
-                Operation::RemoveProtectedVictim => "Removing protected victim".into(),
-                Operation::SetShowProtected | Operation::SetKillmailProtection => {
-                    "Saving protection settings".into()
-                }
-                Operation::PreparePost => "Checking posting eligibility".into(),
-                Operation::Post => "Posting confirmed killmails".into(),
-            };
+            return active.label.into();
         }
         if self.persistence_blocked.is_some() {
             return "Local state unavailable - See warning".into();
@@ -364,19 +299,46 @@ impl App {
     }
 }
 
+/// Opens the desktop interface, optionally on an offline scenario.
+pub(crate) fn run(scenario: Option<&str>, dev_state: Option<&Path>) -> Result<(), String> {
+    let inspection = std::env::var("EGUI_INSPECTION")
+        .is_ok_and(|value| !value.is_empty() && value != "0" && value != "false");
+    if inspection && scenario.is_none() {
+        return Err(
+            "EGUI_INSPECTION may only be enabled together with a simulation scenario".into(),
+        );
+    }
+    let app = match scenario {
+        None => App::new(),
+        Some(name) => {
+            let (core, name) =
+                crate::cli::scenario_core(name, dev_state).map_err(|error| error.to_string())?;
+            App::build(core, None, Some(name), false)
+        }
+    };
+    let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../assets/app-icon.png"))
+        .map_err(|_| "could not decode application icon")?;
+    eframe::run_native(
+        "EVE Killmail Publisher",
+        eframe::NativeOptions {
+            viewport: egui::ViewportBuilder::default()
+                .with_app_id("ekmp")
+                .with_inner_size([1180.0, 760.0])
+                .with_min_inner_size([900.0, 620.0])
+                .with_icon(icon),
+            ..Default::default()
+        },
+        Box::new(move |_| Ok(Box::new(app))),
+    )
+    .map_err(|_| "could not open desktop interface".into())
+}
+
 fn relative_time_label(timestamp: u64, now: u64) -> String {
     if timestamp > now {
         format!("in {}s", timestamp - now)
     } else {
         format!("{}s ago", now - timestamp)
     }
-}
-
-fn unix_time() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 #[cfg(test)]
@@ -398,7 +360,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&directory).unwrap();
         let path = directory.join("ekmp.json");
-        let core = Core::at_path(Arc::new(LiveBackend), path.clone());
+        let core = Core::at_path(Arc::new(LiveBackend::default()), path.clone());
         core.initialize(Store {
             show_protected_killmails: true,
             ..Store::default()
@@ -424,7 +386,7 @@ mod tests {
 
     #[test]
     fn background_snapshot_poll_observes_external_core_edits() {
-        let core = Core::in_memory(Arc::new(LiveBackend), Store::default());
+        let core = Core::in_memory(Arc::new(LiveBackend::default()), Store::default());
         let external_core = core.clone();
         let mut app = App::build(core, None, Some("test".into()), true);
         assert!(!app.store.show_protected_killmails);

@@ -1,6 +1,6 @@
 # Release runbook
 
-This runbook covers the `v0.2.0` release of EVE Killmail Publisher.
+This runbook covers the `v0.3.0` release of EVE Killmail Publisher.
 It ships x86-64 Linux (glibc 2.35+) and x86-64 Windows builds.
 
 ## One-time GitHub setup
@@ -80,6 +80,9 @@ runnable application downloads.
 - Confirm that posting is always explicitly initiated, bulk posting excludes
   protected victims even after its confirmation dialog opens, and protected
   killmails require the individual `Post anyway` action.
+- Run the CLI (`ekmp status`, `ekmp refresh`, `ekmp list`) against the same
+  state as the GUI, and confirm the opt-in refresh service (systemd user unit
+  on Linux, scheduled task on Windows) refreshes data and never posts.
 - Test the Linux Secret Service fallback warning if practical. Never use or
   disclose a real refresh token in test artifacts or issue reports.
 

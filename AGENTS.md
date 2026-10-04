@@ -59,14 +59,20 @@
   cancellation, waits, API cooldowns, and durable zKillboard request spacing.
   Integration errors convert into `CoreError` at this boundary. Tests live alongside their owning modules, with shared backend and
   store fixtures in test-only `test_support.rs`.
-- `src/cli/mod.rs` owns Clap command parsing and value validation, terminal
-  confirmation, JSON rendering, cancellation handling, and offline-scenario
-  core construction shared with the GUI. `src/cli/service.rs` owns the
-  foreground refresh service run by the `ekmp.service` systemd user unit: it
-  only refreshes, waits until a refresh is due (checking at least once a
-  minute), logs one line per cycle to stderr for journald, waits rather than
-  exits without characters, and exits 0 on SIGINT or SIGTERM.
-- `src/clock.rs` owns system time and HTTP-date conversion.
+- `src/cli/` owns the command-line interface. `mod.rs` owns `run`, command
+  dispatch, cancellation handling, exit codes, and offline-scenario core
+  construction shared with the GUI. `args.rs` owns Clap definitions and value
+  validation; `commands.rs` owns the character, posting, protection, and
+  configuration commands; `prompt.rs` owns interruptible terminal input and
+  confirmation; `output.rs` owns `Output`, which pairs each result's JSON with
+  its human-readable text; `text.rs` owns table and value formatting. The
+  `--json` schema is the stable script interface; text output may change.
+  `service.rs` owns the foreground refresh service run by the `ekmp.service`
+  systemd user unit: it only refreshes, waits until a refresh is due (checking
+  at least once a minute), logs one line per cycle to stderr for journald,
+  waits rather than exits without characters, and exits 0 on SIGINT or
+  SIGTERM.
+- `src/clock.rs` owns system time, HTTP-date conversion, and UTC formatting.
 - `src/app/` owns the optional GUI shell and its launcher. It renders core
   snapshots, GUI-only textures and expansion state, and polls shared state
   without writing a stale snapshot back to storage.

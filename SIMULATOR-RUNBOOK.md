@@ -36,7 +36,7 @@ Global development options precede the command: `--scenario NAME` and
 `--dev-state PATH` are followed by `gui`, `list`, `refresh`, `post`, or another
 CLI command. The simulator supports the same CLI workflow as the live program.
 For example, use `list --show-protected`, `refresh`, `protect add`, and `post
-ID --yes`; simulated post results appear in JSON command output or the GUI's
+ID --yes`; simulated post results appear in command output (text, or JSON with `--json`) or the GUI's
 session-only results panel.
 
 Use the GUI normally to reveal protected killmails, protect additional victims,

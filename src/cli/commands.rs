@@ -4,17 +4,18 @@ use super::{
     args::{
         Characters, Cli, Config, ConfigKey, PostArgs, Protect, ProtectAdd, ProtectRemove, Setting,
     },
-    output::to_json,
+    output::{to_json, Output},
     prompt::{confirm, read_line},
-    Output,
+    text::{duration, table},
 };
 use crate::{
-    core::{Cancellation, Core, CoreError, PostSelection},
+    core::{Cancellation, Core, CoreError, PostBatchResult, PostResultStatus, PostSelection},
     integrations::auth::AuthFlow,
     models::{Character, ProtectedVictimKind, Store},
 };
 use serde::Serialize;
-use serde_json::{json, Value};
+use serde_json::json;
+use std::fmt::Write;
 
 #[derive(Serialize)]
 struct CharacterOutput<'a> {
@@ -48,7 +49,23 @@ pub(super) fn characters(
                 .iter()
                 .map(CharacterOutput::from)
                 .collect::<Vec<_>>();
-            Ok((json!(output), 0))
+            let text = if store.characters.is_empty() {
+                "No characters are authenticated. Add one with `ekmp characters add`.".into()
+            } else {
+                let rows: Vec<Vec<String>> = store
+                    .characters
+                    .iter()
+                    .map(|character| {
+                        vec![
+                            character.id.to_string(),
+                            character.name.clone(),
+                            character.corporation_name.clone().unwrap_or_default(),
+                        ]
+                    })
+                    .collect();
+                table(&["ID", "NAME", "CORPORATION"], &rows)
+            };
+            Ok(Output::new(json!(output), text))
         }
         Characters::Add { no_browser, paste } => {
             let read_pasted_url = || {
@@ -64,7 +81,11 @@ pub(super) fn characters(
             let character = core.authenticate(cancel, flow, &|url| {
                 eprintln!("{instructions}\n\n{url}\n");
             })?;
-            Ok((json!({"id": character.id, "name": character.name}), 0))
+            let text = format!("Added {} ({}).", character.name, character.id);
+            Ok(Output::new(
+                json!({"id": character.id, "name": character.name}),
+                text,
+            ))
         }
         Characters::Remove { id, yes } => {
             confirm(
@@ -73,8 +94,15 @@ pub(super) fn characters(
                 cancel,
             )?;
             let result = core.remove_character(*id)?;
+            let mut text = format!(
+                "Removed {} ({}) and {} cached killmails.",
+                result.name, result.id, result.removed_killmails
+            );
+            if let Some(warning) = &result.credential_warning {
+                let _ = write!(text, "\nWarning: {warning}");
+            }
             let code = u8::from(result.credential_warning.is_some());
-            Ok((to_json(result)?, code))
+            Ok(Output::new(to_json(result)?, text).with_code(code))
         }
     }
 }
@@ -127,9 +155,13 @@ pub(super) fn post(
             }
             eprintln!("ekmp: {error}");
             let code = if cancel.is_cancelled() { 130 } else { 1 };
+            let text: String = completed
+                .iter()
+                .map(|report| format!("{}  submitted  {}\n", report.killmail_id, report.url))
+                .collect();
             let output =
                 json!({"completed": completed, "error": error.to_string(), "exit_code": code});
-            return Ok((output, code));
+            return Ok(Output::new(output, text).with_code(code));
         }
     };
     let code = if result.cancelled {
@@ -137,10 +169,37 @@ pub(super) fn post(
     } else {
         u8::from(result.has_failures())
     };
-    Ok((to_json(result)?, code))
+    let text = post_text(&result);
+    Ok(Output::new(to_json(result)?, text).with_code(code))
 }
 
-pub(super) fn protect(command: &Protect, core: &Core) -> Result<Value, CoreError> {
+fn post_text(result: &PostBatchResult) -> String {
+    let rows: Vec<Vec<String>> = result
+        .results
+        .iter()
+        .map(|item| {
+            let status = match item.status {
+                PostResultStatus::Submitted => "submitted",
+                PostResultStatus::AlreadyPresent => "already reported",
+                PostResultStatus::Skipped => "skipped",
+                PostResultStatus::Failed => "failed",
+            };
+            let detail = item
+                .url
+                .as_deref()
+                .or(item.message.as_deref())
+                .unwrap_or_default();
+            vec![item.killmail_id.to_string(), status.into(), detail.into()]
+        })
+        .collect();
+    let mut text = table(&["ID", "RESULT", "DETAIL"], &rows);
+    if result.cancelled {
+        text.push_str("Cancelled; the remaining killmails were not submitted.\n");
+    }
+    text
+}
+
+pub(super) fn protect(command: &Protect, core: &Core) -> Result<Output, CoreError> {
     use ProtectedVictimKind::{Character, Corporation};
     match command {
         Protect::List => {
@@ -152,63 +211,143 @@ pub(super) fn protect(command: &Protect, core: &Core) -> Result<Value, CoreError
                     json!({"id": character.id, "name": character.name, "corporation_id": character.corporation_id})
                 })
                 .collect::<Vec<_>>();
-            Ok(json!({
-                "characters": store.manually_protected_characters,
-                "corporations": store.manually_protected_corporations,
-                "killmail_ids": store.manually_protected_killmail_ids,
-                "automatic_characters": automatic,
-            }))
+            let text = protection_text(&store);
+            Ok(Output::new(
+                json!({
+                    "characters": store.manually_protected_characters,
+                    "corporations": store.manually_protected_corporations,
+                    "killmail_ids": store.manually_protected_killmail_ids,
+                    "automatic_characters": automatic,
+                }),
+                text,
+            ))
         }
         Protect::Add(target) => {
-            match target {
+            let text = match target {
                 ProtectAdd::Character { query } => {
-                    core.add_protected_victim(Character, query)?;
+                    let victim = core.add_protected_victim(Character, query)?;
+                    format!("Protected character {} ({}).", victim.name, victim.id)
                 }
                 ProtectAdd::Corporation { query } => {
-                    core.add_protected_victim(Corporation, query)?;
+                    let victim = core.add_protected_victim(Corporation, query)?;
+                    format!("Protected corporation {} ({}).", victim.name, victim.id)
                 }
-                ProtectAdd::Killmail { id } => core.set_killmail_protection(*id, true)?,
-            }
-            Ok(json!({"protected": true}))
+                ProtectAdd::Killmail { id } => {
+                    core.set_killmail_protection(*id, true)?;
+                    format!("Protected killmail {id}.")
+                }
+            };
+            Ok(Output::new(json!({"protected": true}), text))
         }
         Protect::Remove(target) => {
-            match target {
+            let text = match target {
                 ProtectRemove::Character { id } => {
                     core.remove_protected_victim(Character, *id)?;
+                    format!("Character {id} is no longer protected.")
                 }
                 ProtectRemove::Corporation { id } => {
                     core.remove_protected_victim(Corporation, *id)?;
+                    format!("Corporation {id} is no longer protected.")
                 }
-                ProtectRemove::Killmail { id } => core.set_killmail_protection(*id, false)?,
-            }
-            Ok(json!({"removed": true}))
+                ProtectRemove::Killmail { id } => {
+                    core.set_killmail_protection(*id, false)?;
+                    format!("Killmail {id} is no longer protected.")
+                }
+            };
+            Ok(Output::new(json!({"removed": true}), text))
         }
     }
 }
 
-pub(super) fn config(command: &Config, core: &Core) -> Result<Value, CoreError> {
+fn protection_text(store: &Store) -> String {
+    let mut text = String::from(
+        "Automatically protected (authenticated characters and their corporations):\n",
+    );
+    if store.characters.is_empty() {
+        text.push_str("  none\n");
+    }
+    for character in &store.characters {
+        let corporation = character
+            .corporation_name
+            .as_deref()
+            .map(|name| format!(", {name}"))
+            .unwrap_or_default();
+        let _ = writeln!(text, "  {} ({}){corporation}", character.name, character.id);
+    }
+    for (heading, victims) in [
+        ("Protected characters", &store.manually_protected_characters),
+        (
+            "Protected corporations",
+            &store.manually_protected_corporations,
+        ),
+    ] {
+        let _ = writeln!(text, "{heading}:");
+        if victims.is_empty() {
+            text.push_str("  none\n");
+        }
+        for victim in victims {
+            let _ = writeln!(text, "  {} ({})", victim.name, victim.id);
+        }
+    }
+    let killmails = &store.manually_protected_killmail_ids;
+    let ids = if killmails.is_empty() {
+        "none".into()
+    } else {
+        killmails
+            .iter()
+            .map(u64::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let _ = writeln!(text, "Protected killmails: {ids}");
+    text
+}
+
+pub(super) fn config(command: &Config, core: &Core) -> Result<Output, CoreError> {
     match command {
         Config::Get { key } => {
             let store = core.snapshot()?.store;
-            Ok(match key {
-                Some(ConfigKey::RefreshInterval) => {
-                    json!({"refresh_interval_secs": store.refresh_interval_secs})
-                }
-                Some(ConfigKey::ShowProtectedKillmails) => {
-                    json!({"show_protected_killmails": store.show_protected_killmails})
-                }
-                None => json!({
-                    "refresh_interval_secs": store.refresh_interval_secs,
-                    "show_protected_killmails": store.show_protected_killmails,
-                }),
-            })
+            let interval = (
+                "refresh_interval_secs",
+                json!(store.refresh_interval_secs),
+                format!(
+                    "refresh-interval: {}",
+                    duration(store.refresh_interval_secs)
+                ),
+            );
+            let show = (
+                "show_protected_killmails",
+                json!(store.show_protected_killmails),
+                format!(
+                    "show-protected-killmails: {}",
+                    store.show_protected_killmails
+                ),
+            );
+            let selected = match key {
+                Some(ConfigKey::RefreshInterval) => vec![interval],
+                Some(ConfigKey::ShowProtectedKillmails) => vec![show],
+                None => vec![interval, show],
+            };
+            let mut json = serde_json::Map::new();
+            let mut text = String::new();
+            for (name, value, line) in selected {
+                json.insert(name.into(), value);
+                let _ = writeln!(text, "{line}");
+            }
+            Ok(Output::new(json.into(), text))
         }
         Config::Set(setting) => {
-            match setting {
-                Setting::RefreshInterval { value } => core.set_refresh_interval(*value)?,
-                Setting::ShowProtectedKillmails { value } => core.set_show_protected(*value)?,
-            }
-            Ok(json!({"saved": true}))
+            let text = match setting {
+                Setting::RefreshInterval { value } => {
+                    core.set_refresh_interval(*value)?;
+                    format!("Saved refresh-interval: {}.", duration(value.as_secs()))
+                }
+                Setting::ShowProtectedKillmails { value } => {
+                    core.set_show_protected(*value)?;
+                    format!("Saved show-protected-killmails: {value}.")
+                }
+            };
+            Ok(Output::new(json!({"saved": true}), text))
         }
     }
 }

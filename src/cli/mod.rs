@@ -5,19 +5,21 @@ mod commands;
 mod output;
 mod prompt;
 mod service;
+mod text;
 
 use crate::clock::unix_time;
 use crate::{
-    core::{Cancellation, Core, CoreError},
+    core::{Cancellation, Core, CoreError, RefreshResult, StatusSnapshot},
     integrations::backend::LiveBackend,
     killmail::displayed_killmails,
 };
 use args::{Cli, Command, Service};
 use clap::{CommandFactory, Parser};
 use commands::{characters, config, listing_store, post, protect};
-use output::{emit, emit_error, mail_output, to_json};
-use serde_json::{json, Value};
-use std::{path::Path, sync::Arc};
+use output::{emit, emit_error, killmail_details, killmail_table, mail_output, to_json, Output};
+use serde_json::json;
+use std::{fmt::Write, path::Path, sync::Arc};
+use text::{duration, fields, minutes, timestamp, yes_no};
 
 pub(crate) fn run() -> u8 {
     if std::env::args_os().len() == 1 {
@@ -69,9 +71,9 @@ pub(crate) fn run() -> u8 {
         result
     });
     match result {
-        Ok((value, code)) => {
-            emit(cli.json, &value);
-            code
+        Ok(output) => {
+            emit(cli.json, &output);
+            output.code
         }
         Err(error) => {
             let code = match error {
@@ -126,26 +128,41 @@ pub(crate) fn scenario_core(
     }
 }
 
-/// The JSON output and exit code of a successful command.
-type Output = (Value, u8);
-
 fn execute(cli: &Cli, core: &Core, cancel: &Cancellation) -> Result<Output, CoreError> {
-    let (value, code) = match &cli.command {
+    let output = match &cli.command {
         Command::Gui => unreachable!("the GUI is launched before a core is created"),
         Command::Characters(command) => characters(command, core, cancel)?,
         Command::Refresh => {
             let result = core.refresh(cancel)?;
             let code = u8::from(result.has_failures);
-            (to_json(result)?, code)
+            let text = refresh_text(&result);
+            Output::new(to_json(result)?, text).with_code(code)
         }
         Command::List => {
             let (store, now) = (listing_store(cli, core)?, unix_time());
             let mails = displayed_killmails(&store, &store.cached_killmails, now);
-            let output = mails
-                .into_iter()
+            let json = mails
+                .iter()
                 .map(|mail| mail_output(&store, mail, now, false))
                 .collect::<Vec<_>>();
-            (json!(output), 0)
+            let mut text = if mails.is_empty() {
+                "No unreported killmails to review.\n".to_owned()
+            } else {
+                killmail_table(&store, &mails, now)
+            };
+            if !store.show_protected_killmails {
+                let mut all = store.clone();
+                all.show_protected_killmails = true;
+                let hidden =
+                    displayed_killmails(&all, &all.cached_killmails, now).len() - mails.len();
+                if hidden > 0 {
+                    let _ = writeln!(
+                        text,
+                        "{hidden} protected killmails are hidden; use --show-protected to include them."
+                    );
+                }
+            }
+            Output::new(json!(json), text)
         }
         Command::Show { id } => {
             let (store, now) = (listing_store(cli, core)?, unix_time());
@@ -157,16 +174,110 @@ fn execute(cli: &Cli, core: &Core, cancel: &Cancellation) -> Result<Output, Core
                         "killmail is missing, reported, or hidden by protection settings".into(),
                     )
                 })?;
-            (mail_output(&store, mail, now, true), 0)
+            Output::new(
+                mail_output(&store, mail, now, true),
+                killmail_details(&store, mail, now),
+            )
         }
         Command::Post(args) => post(args, core, cancel)?,
-        Command::Protect(command) => (protect(command, core)?, 0),
-        Command::Config(command) => (config(command, core)?, 0),
-        Command::Status => (to_json(core.snapshot()?.status)?, 0),
+        Command::Protect(command) => protect(command, core)?,
+        Command::Config(command) => config(command, core)?,
+        Command::Status => {
+            let status = core.snapshot()?.status;
+            let text = status_text(&status);
+            Output::new(to_json(status)?, text)
+        }
         // A stopped service is a clean exit, not a cancelled command.
         Command::Service(Service::Run { interval }) => {
             return service::run(core, *interval, cancel, cli.json);
         }
     };
-    Ok((value, if cancel.is_cancelled() { 130 } else { code }))
+    let code = if cancel.is_cancelled() {
+        130
+    } else {
+        output.code
+    };
+    Ok(output.with_code(code))
+}
+
+fn refresh_text(result: &RefreshResult) -> String {
+    if result.idle {
+        return "No characters are authenticated. Add one with `ekmp characters add`.".into();
+    }
+    if let Some(until) = result.deferred_until {
+        let wait = until.saturating_sub(unix_time());
+        return format!("Refresh is not due yet; try again in {}.", minutes(wait));
+    }
+    let mut text: String = result
+        .messages
+        .iter()
+        .map(|message| format!("{message}\n"))
+        .collect();
+    let verb = if result.reported_found == 1 {
+        "was"
+    } else {
+        "were"
+    };
+    let _ = write!(
+        text,
+        "Fetched {} killmails; {} {verb} already on zKillboard.",
+        result.fetched_killmails, result.reported_found
+    );
+    if result.status_checks_incomplete > 0 {
+        let _ = write!(
+            text,
+            " {} status checks are incomplete and will be retried.",
+            result.status_checks_incomplete
+        );
+    }
+    text.push('\n');
+    text
+}
+
+fn status_text(status: &StatusSnapshot) -> String {
+    let next = status
+        .next_eligible_refresh_at
+        .map(|at| {
+            let wait = at.saturating_sub(unix_time());
+            if wait == 0 {
+                "due now".to_owned()
+            } else {
+                format!("{} (in {})", timestamp(Some(at)), minutes(wait))
+            }
+        })
+        .unwrap_or_else(|| "due now".into());
+    let mut pairs = vec![
+        ("Characters", status.authenticated_characters.to_string()),
+        ("Unreported killmails", status.unreported.to_string()),
+        (
+            "Awaiting zKillboard status",
+            status.awaiting_status.to_string(),
+        ),
+        (
+            "Last successful refresh",
+            timestamp(status.last_refresh_success_at),
+        ),
+        ("Next refresh", next),
+        ("Refresh interval", duration(status.refresh_interval_secs)),
+        ("Service running", yes_no(status.service_running)),
+    ];
+    if let Some(error) = &status.last_error {
+        pairs.push(("Last error", error.clone()));
+    }
+    for cooldown in &status.api_cooldowns {
+        let scope = cooldown
+            .scope
+            .as_deref()
+            .map(|scope| format!(" ({scope})"))
+            .unwrap_or_default();
+        pairs.push((
+            "API cooldown",
+            format!(
+                "{}{scope} until {}",
+                cooldown.source,
+                timestamp(Some(cooldown.until))
+            ),
+        ));
+    }
+    fields(&pairs)
 }

@@ -3,9 +3,11 @@
 //! It only refreshes: it never posts killmails, authenticates, or opens a browser. Log lines
 //! go to stderr without timestamps because journald adds them.
 
-use super::{emit, to_json, Output};
+use super::{
+    output::{emit, to_json, Output},
+    text::minutes,
+};
 use crate::core::{Cancellation, Core, CoreError, RefreshResult};
-use serde_json::Value;
 use std::time::Duration;
 
 /// Waits at most this long between checks, so new characters and `config set` changes are
@@ -46,7 +48,7 @@ pub(super) fn run(
         cancel.wait(next_wait(core, interval));
     }
     eprintln!("Refresh service stopped.");
-    Ok((Value::Null, 0))
+    Ok(Output::none())
 }
 
 fn next_wait(core: &Core, interval: Option<Duration>) -> Duration {
@@ -61,7 +63,7 @@ fn next_wait(core: &Core, interval: Option<Duration>) -> Duration {
 fn report(core: &Core, interval: Option<Duration>, result: &RefreshResult, json_output: bool) {
     if json_output {
         if let Ok(value) = to_json(result) {
-            emit(true, &value);
+            emit(true, &Output::new(value, ""));
         }
         return;
     }
@@ -86,24 +88,7 @@ fn report(core: &Core, interval: Option<Duration>, result: &RefreshResult, json_
         .next_refresh_delay(interval)
         .ok()
         .flatten()
-        .map(|delay| format!("; next in {}", minutes(delay)))
+        .map(|delay| format!("; next in {}", minutes(delay.as_secs())))
         .unwrap_or_default();
     eprintln!("{outcome}{counts}{next}.");
-}
-
-/// Formats `delay` as whole minutes, rounded up so a pending refresh never shows as `0m`.
-fn minutes(delay: Duration) -> String {
-    format!("{}m", delay.as_secs().div_ceil(60))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn minutes_round_up() {
-        assert_eq!(minutes(Duration::from_secs(1)), "1m");
-        assert_eq!(minutes(Duration::from_secs(900)), "15m");
-        assert_eq!(minutes(Duration::from_secs(901)), "16m");
-    }
 }

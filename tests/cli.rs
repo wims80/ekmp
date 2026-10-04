@@ -464,3 +464,32 @@ fn persisted_cooldown_blocks_lookup_and_submission_in_new_processes() {
     assert!(after["zkill_pages"].as_object().unwrap().is_empty());
     assert!(after["zkill_status"]["9001"].is_null());
 }
+
+#[test]
+fn default_output_is_readable_text_and_json_is_opt_in() {
+    let state = TestState::new();
+    success(run_scenario(&state, &["refresh"]));
+
+    let list = success(run_scenario(&state, &["list"]));
+    let header = list.lines().next().unwrap();
+    assert!(header.starts_with("ID"), "{list}");
+    assert!(header.contains("STATUS") && header.contains("BULK"));
+    assert!(list.contains("9001"));
+    assert!(list.contains("protected killmails are hidden; use --show-protected"));
+    assert!(!list.contains("fixture-hash") && !list.contains('{'));
+
+    let shown = success(run_scenario(&state, &["--show-protected", "show", "9002"]));
+    assert!(shown.contains("Protected:"));
+    assert!(shown.contains("Eligible for bulk posting: no"));
+
+    let status = success(run_scenario(&state, &["status"]));
+    assert!(status.contains("Unreported killmails:"));
+
+    let json = success(run_scenario(&state, &["--json", "list"]));
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|mail| mail["id"].is_u64()));
+}

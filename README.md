@@ -6,7 +6,9 @@ Killmails are never submitted automatically. Authenticated characters and their 
 
 ## Command line
 
-Running `ekmp` with no arguments displays help. `--json` produces structured results on stdout; prompts, progress, and diagnostics use stderr.
+Running `ekmp` with no arguments displays help. Results are readable tables and summaries on stdout, with times in UTC (EVE time). For scripts, `--json` prints the same results as JSON, a stable interface whose fields do not change with the text layout. Prompts, progress, and diagnostics always use stderr.
+
+Exit codes: `0` success, `1` error or partial failure, `2` invalid usage, `3` another ekmp operation is in progress, `130` cancelled. A stopped `service run` exits `0`.
 
 ```sh
 ekmp characters add

@@ -279,6 +279,17 @@ Done 2026-10-05:
   service is the exception: a clean stop exits 0.
 - Update the README tables and the policy tests that read human output.
 
+Done 2026-10-05:
+
+- The split is its own commit: `args.rs`, `commands.rs`, `output.rs`,
+  `prompt.rs` and `service.rs`. `prompt.rs` replaced the planned `confirm.rs`
+  because it also holds the paste reader. Formatting lives in `text.rs`.
+- Every command returns an `Output` that carries its unchanged JSON, its text
+  and its exit code. The `--json` output of 14 commands was diffed against the
+  previous commit on identical simulator state and is identical.
+- Times are shown in UTC (EVE time) through `clock::format_utc`, with no new
+  dependency. `list` says how many protected killmails are hidden.
+
 ### Phase 7: Packaging and docs
 
 - Add a hidden `ekmp generate completions <shell>` command (`clap_complete`)

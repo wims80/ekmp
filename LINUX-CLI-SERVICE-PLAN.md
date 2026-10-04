@@ -255,6 +255,15 @@ Done 2026-10-05:
   existing state and PKCE checks stay; only how the callback arrives changes.
 - Also document the SSH tunnel option: `ssh -L 17842:127.0.0.1:17842 host`.
 
+Done 2026-10-05:
+
+- `AuthFlow::{Loopback, Paste}` replaces the `open_browser` flag on
+  `Backend::authenticate`. A pasted URL must be the registered callback
+  (scheme, host, port and path) with the expected `state`. An SSO `error`
+  parameter is reported, not ignored.
+- `--paste` conflicts with `--no-browser`. The GUI keeps the loopback flow and
+  opens the browser.
+
 ### Phase 6: Standard CLI output and module split
 
 - Split `src/cli.rs` into `src/cli/{mod.rs, args.rs, commands.rs, output.rs,

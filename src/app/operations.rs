@@ -5,6 +5,7 @@ use crate::{
         Cancellation, Core, CoreError, CoreEvent, CoreResult, PostResultStatus, PostSelection,
         PreparedPost,
     },
+    integrations::auth::AuthFlow,
     models::ProtectedVictimKind,
 };
 use std::{
@@ -52,9 +53,13 @@ impl App {
             "Authorize the character in your browser...",
             |core, context| {
                 let updates = context.updates.clone();
-                let character = core.authenticate(&context.cancellation, true, &move |url| {
-                    let _ = updates.send(OperationUpdate::AuthorizationUrl(url.to_owned()));
-                })?;
+                let character = core.authenticate(
+                    &context.cancellation,
+                    AuthFlow::Loopback { open_browser: true },
+                    &move |url| {
+                        let _ = updates.send(OperationUpdate::AuthorizationUrl(url.to_owned()));
+                    },
+                )?;
                 then(move |app| {
                     app.log(format!("Character {} authenticated", character.name));
                     app.refresh_after_snapshot = true;

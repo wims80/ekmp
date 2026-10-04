@@ -21,7 +21,7 @@ Use `ekmp gui` to open the desktop interface in a build that includes it. The re
 | Command | Purpose |
 | --- | --- |
 | `characters list` | List authenticated characters. |
-| `characters add [--no-browser]` | Authenticate with same-machine PKCE. `--no-browser` prints the authorization URL. |
+| `characters add [--no-browser \| --paste]` | Authenticate with EVE SSO (PKCE). `--no-browser` prints the authorization URL; `--paste` signs in from another machine (see below). |
 | `characters remove ID [--yes]` | Remove a character, its credentials, and unshared cached killmails after confirmation. |
 | `refresh` | Refresh recent killmails and reporting statuses. |
 | `list` / `show ID` | Read cached killmails without network requests. |
@@ -67,6 +67,15 @@ It expects `ekmp` in `~/.local/bin`. Installation never enables the service.
 - Remove it with `systemctl --user disable --now ekmp.service` and `rm ~/.config/systemd/user/ekmp.service`.
 
 The service checks at least once a minute whether a refresh is due, so `config set` changes and new characters take effect without a restart. With no authenticated characters it waits rather than exiting. `systemctl --user stop` (SIGTERM) or Ctrl+C finishes the current request, saves, and exits with status 0.
+
+## Signing in on a headless host
+
+EVE SSO redirects the browser to `http://127.0.0.1:17842/callback` on the machine running the browser. Without `DISPLAY` or `WAYLAND_DISPLAY`, `ekmp characters add` prints the authorization URL instead of opening a browser. To sign in to a server from another machine, either:
+
+- run `ekmp characters add --paste`, open the printed URL on any machine, sign in, and paste the address the browser is sent to (the page itself fails to load, which is expected); or
+- forward the callback with `ssh -L 17842:127.0.0.1:17842 SERVER`, run `ekmp characters add` in that session, and open the printed URL in your local browser.
+
+Either way ekmp checks the OAuth `state` and completes PKCE itself; the pasted address is single-use and cannot be redeemed without the PKCE verifier that only this ekmp process holds.
 
 ## Authentication, data, and caches
 

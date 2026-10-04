@@ -1,5 +1,10 @@
 use crate::{
-    integrations::{auth, esi, http::ApiLog, zkill, ApiResult},
+    integrations::{
+        auth::{self, AuthFlow},
+        esi,
+        http::ApiLog,
+        zkill, ApiResult,
+    },
     models::{ApiCooldown, Character, Killmail, ProtectedVictim, ProtectedVictimKind, ZkillPage},
     persistence::secrets,
 };
@@ -21,7 +26,7 @@ pub(crate) trait Backend: Send + Sync {
     fn authenticate(
         &self,
         cancelled: &AtomicBool,
-        open_browser: bool,
+        flow: AuthFlow,
         on_authorization_url: &dyn Fn(&str),
     ) -> ApiResult<Character>;
     fn refresh_character_affiliation(
@@ -75,10 +80,10 @@ impl Backend for LiveBackend {
     fn authenticate(
         &self,
         cancelled: &AtomicBool,
-        open_browser: bool,
+        flow: AuthFlow,
         on_authorization_url: &dyn Fn(&str),
     ) -> ApiResult<Character> {
-        auth::authenticate(cancelled, open_browser, on_authorization_url)
+        auth::authenticate(cancelled, flow, on_authorization_url)
     }
 
     fn refresh_character_affiliation(

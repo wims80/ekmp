@@ -1,7 +1,7 @@
 use crate::clock::unix_time;
 use crate::{
     core::{Cancellation, Core, CoreError, PostSelection},
-    integrations::backend::LiveBackend,
+    integrations::{auth::AuthFlow, backend::LiveBackend},
     killmail::{
         displayed_killmails, is_bulk_candidate, is_eligible_for_bulk_posting, report_state,
         ReportState,
@@ -74,9 +74,14 @@ enum Command {
 #[derive(Subcommand)]
 enum Characters {
     List,
+    /// Authenticate a character with EVE SSO.
     Add {
+        /// Print the authorization URL instead of opening a browser.
         #[arg(long)]
         no_browser: bool,
+        /// Sign in on any machine, then paste the URL the browser was redirected to.
+        #[arg(long, conflicts_with = "no_browser")]
+        paste: bool,
     },
     Remove {
         #[arg(value_parser = positive_id())]
@@ -382,9 +387,19 @@ fn characters(
                 .collect::<Vec<_>>();
             Ok((json!(output), 0))
         }
-        Characters::Add { no_browser } => {
-            let character = core.authenticate(cancel, !no_browser, &|url| {
-                eprintln!("Authorize on this machine: {url}");
+        Characters::Add { no_browser, paste } => {
+            let read_pasted_url = || {
+                eprint!("Paste the full URL from the browser's address bar: ");
+                read_line(cancel).ok()
+            };
+            let (flow, instructions) = if *paste {
+                (AuthFlow::Paste(&read_pasted_url), PASTE_INSTRUCTIONS)
+            } else {
+                let open_browser = !no_browser && has_display();
+                (AuthFlow::Loopback { open_browser }, LOOPBACK_INSTRUCTIONS)
+            };
+            let character = core.authenticate(cancel, flow, &|url| {
+                eprintln!("{instructions}\n\n{url}\n");
             })?;
             Ok((json!({"id": character.id, "name": character.name}), 0))
         }
@@ -536,6 +551,21 @@ fn to_json(value: impl Serialize) -> Result<Value, CoreError> {
         .map_err(|_| CoreError::Operational("could not encode output".into()))
 }
 
+const LOOPBACK_INSTRUCTIONS: &str = "\
+Sign in with this URL in a browser on this machine. From another machine, forward the
+callback first (ssh -L 17842:127.0.0.1:17842 HOST) or use `ekmp characters add --paste`.";
+
+const PASTE_INSTRUCTIONS: &str = "\
+Open this URL in a browser on any machine and sign in. The browser is then sent to a
+127.0.0.1 address that fails to load; that is expected. Copy that address and paste it here.";
+
+/// Whether a graphical session is available to open a browser in.
+fn has_display() -> bool {
+    ["DISPLAY", "WAYLAND_DISPLAY"]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+}
+
 fn confirm(yes: bool, prompt: &str, cancel: &Cancellation) -> Result<(), CoreError> {
     if cancel.is_cancelled() {
         return Err(CoreError::Cancelled);
@@ -549,31 +579,36 @@ fn confirm(yes: bool, prompt: &str, cancel: &Cancellation) -> Result<(), CoreErr
         ));
     }
     eprint!("{prompt} [y/N] ");
+    let answer = read_line(cancel)?;
+    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
+        Ok(())
+    } else {
+        Err(CoreError::Cancelled)
+    }
+}
+
+/// Reads one line from stdin after a prompt on stderr, unless cancelled first.
+fn read_line(cancel: &Cancellation) -> Result<String, CoreError> {
     io::stderr()
         .flush()
-        .map_err(|_| CoreError::Operational("could not display confirmation".into()))?;
+        .map_err(|_| CoreError::Operational("could not display prompt".into()))?;
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut answer = String::new();
         let result = io::stdin().read_line(&mut answer).map(|_| answer);
         let _ = tx.send(result);
     });
-    let answer = loop {
+    loop {
         if cancel.is_cancelled() {
             return Err(CoreError::Cancelled);
         }
         match rx.recv_timeout(Duration::from_millis(100)) {
-            Ok(Ok(answer)) => break answer,
+            Ok(Ok(line)) => return Ok(line),
             Ok(Err(_)) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                return Err(CoreError::Operational("could not read confirmation".into()))
+                return Err(CoreError::Operational("could not read input".into()))
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
         }
-    };
-    if matches!(answer.trim().to_ascii_lowercase().as_str(), "y" | "yes") {
-        Ok(())
-    } else {
-        Err(CoreError::Cancelled)
     }
 }
 #[derive(Serialize)]
@@ -652,6 +687,13 @@ mod tests {
         assert!(parse_interval("4m").is_err());
         assert_eq!(parse_interval("300").unwrap().as_secs(), 300);
         assert_eq!(parse_interval("5m").unwrap().as_secs(), 300);
+    }
+    #[test]
+    fn paste_and_no_browser_are_exclusive() {
+        assert!(Cli::try_parse_from(["ekmp", "characters", "add", "--paste"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["ekmp", "characters", "add", "--paste", "--no-browser"]).is_err()
+        );
     }
     #[test]
     fn dev_state_requires_scenario() {

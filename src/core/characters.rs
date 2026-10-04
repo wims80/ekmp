@@ -4,13 +4,16 @@ use super::{
     timing::{active_api_cooldown, check_cancelled},
     Cancellation, Core, CoreError, CoreResult, RemoveCharacterResult,
 };
-use crate::{killmail::remove_killmails_for_removed_character, models::Character};
+use crate::{
+    integrations::auth::AuthFlow, killmail::remove_killmails_for_removed_character,
+    models::Character,
+};
 
 impl Core {
     pub(crate) fn authenticate(
         &self,
         cancelled: &Cancellation,
-        open_browser: bool,
+        flow: AuthFlow,
         on_authorization_url: &dyn Fn(&str),
     ) -> CoreResult<Character> {
         let mut locked = self.begin_operation()?;
@@ -18,7 +21,7 @@ impl Core {
         self.progress("Waiting for EVE authorization");
         let mut character = self
             .backend
-            .authenticate(cancelled.as_atomic(), open_browser, on_authorization_url)
+            .authenticate(cancelled.as_atomic(), flow, on_authorization_url)
             .map_err(|error| {
                 if cancelled.is_cancelled() {
                     CoreError::Cancelled
@@ -202,8 +205,14 @@ mod tests {
         });
         let core = Core::in_memory(backend, store);
 
-        core.authenticate(&Cancellation::new(), false, &|_| {})
-            .unwrap();
+        core.authenticate(
+            &Cancellation::new(),
+            AuthFlow::Loopback {
+                open_browser: false,
+            },
+            &|_| {},
+        )
+        .unwrap();
         let character = core.snapshot().unwrap().store.characters.remove(0);
 
         assert_eq!(character.corporation_id, Some(100));

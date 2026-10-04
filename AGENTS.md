@@ -82,7 +82,9 @@
 - `src/app/worker.rs` owns the GUI image-loading worker.
 - `src/killmail.rs` owns killmail visibility, reporting status, protection,
   and submission policy.
-- `src/integrations/` owns external API integrations: EVE SSO authentication,
+- `src/integrations/` owns external API integrations: EVE SSO authentication
+  (`auth.rs`; its `AuthFlow` receives the callback on the loopback listener or
+  from a pasted redirect URL, validating the callback URL and OAuth state),
   ESI data access, EVE image-service portraits and logos, and zKillboard lookup
   and submission. Its single backend interface separates the live adapters from
   the feature-gated offline simulator used by workers and UI tests. `mod.rs`

@@ -123,10 +123,10 @@ cargo test --all-features
 
 ### Offline simulation
 
-The `dev-tools` feature uses compiled-in synthetic data and cannot contact EVE, zKillboard, the image service, or a credential store. Global development flags precede the command:
+The `dev-tools` feature uses compiled-in synthetic data and cannot contact EVE, zKillboard, the image service, or a credential store. It is for debug builds only: `--scenario` and `--dev-state` do not exist in other builds, and combining `dev-tools` with `--release` fails to compile, so release binaries can never contain the simulator. The development flags precede the command; the GUI scenario also needs the `gui` feature:
 
 ```sh
-cargo run --features dev-tools -- --scenario mixed gui
+cargo run --features dev-tools,gui -- --scenario mixed gui
 cargo run --features dev-tools -- --scenario errors list
 cargo run --features dev-tools -- --scenario mixed --dev-state target/ekmp-dev-state.json list
 ```

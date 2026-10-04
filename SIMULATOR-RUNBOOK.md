@@ -1,6 +1,8 @@
 # Simulator Runbook
 
-The simulator runs EVE Killmail Publisher against compiled-in synthetic data. It does not
+The simulator runs EVE Killmail Publisher against compiled-in synthetic data. It is part of
+the debug-only `dev-tools` feature: release builds cannot include it, and `--release` with
+`dev-tools` fails to compile. It does not
 authenticate with EVE or contact ESI, the EVE image service, the system credential store, or
 zKillboard. The normal submission rules still apply: nothing is posted until the user or test
 agent performs an explicit individual or confirmed bulk action.
@@ -10,7 +12,7 @@ agent performs an explicit individual or confirmed bulk action.
 Start one of the bundled scenarios:
 
 ```sh
-cargo run --features dev-tools -- --scenario mixed gui
+cargo run --features dev-tools,gui -- --scenario mixed gui
 cargo run --features dev-tools -- --scenario errors list
 ```
 
@@ -110,7 +112,7 @@ codex mcp list
 Restart Codex after adding the server. Then launch an inspectable simulator in a separate terminal:
 
 ```sh
-EGUI_INSPECTION=1 cargo run --features dev-tools -- --scenario mixed gui
+EGUI_INSPECTION=1 cargo run --features dev-tools,gui -- --scenario mixed gui
 ```
 
 Keep the application window visible when screenshots are needed. The semantic tree and input
@@ -140,9 +142,10 @@ which synthetic scenario and exact killmail IDs it may operate on, and require i
 
 ## Troubleshooting
 
-- If `--scenario` is rejected, include `--features dev-tools` and put it before the command.
+- If `--scenario` is rejected, include `--features dev-tools`, build without `--release`, and put
+  it before the command. Add `gui` to the features for `gui` scenarios.
 - If a scenario is unknown, register its name in `src/integrations/simulation.rs` and rebuild.
-- If inspection mode is rejected, include both `--features dev-tools` and `--scenario <name>`.
+- If inspection mode is rejected, include both `--features dev-tools,gui` and `--scenario <name>`.
 - If an agent cannot attach, confirm the application is still running and that the `egui` MCP
   server appears in `codex mcp list`, then restart Codex.
 - If screenshots are blank or stale, restore the application window and keep it visible.

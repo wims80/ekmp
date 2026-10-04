@@ -110,9 +110,11 @@
   victims, `market.rs` estimates values, and `types.rs` contains private
   response DTOs.
 - `dev/scenarios/` owns synthetic JSON scenarios for offline development. The
-  `dev-tools` feature enables scenario launch in CLI-only and GUI builds;
-  eframe inspection is enabled only with the `gui` feature. Live runs must
-  never expose the inspection interface.
+  `dev-tools` feature is debug-only: `main.rs` refuses to compile it without
+  `debug_assertions`, and the `--scenario`/`--dev-state` flags and
+  `cli::simulation` exist only with it. It enables scenario launch in CLI-only
+  and GUI builds; eframe inspection also needs the `gui` feature. Live runs
+  must never expose the inspection interface.
 - `src/models.rs` contains persisted and domain models. Each cached
   killmail's zKillboard evidence is a single `ZkillStatus`.
 - `src/persistence/mod.rs` owns private file-permission helpers;

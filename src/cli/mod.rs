@@ -18,7 +18,7 @@ use clap::{CommandFactory, Parser};
 use commands::{characters, config, listing_store, post, protect};
 use output::{emit, emit_error, killmail_details, killmail_table, mail_output, to_json, Output};
 use serde_json::json;
-use std::{fmt::Write, path::Path, sync::Arc};
+use std::{fmt::Write, sync::Arc};
 use text::{duration, fields, minutes, timestamp, yes_no};
 
 pub(crate) fn run() -> u8 {
@@ -37,7 +37,9 @@ pub(crate) fn run() -> u8 {
     };
     if matches!(cli.command, Command::Gui) {
         #[cfg(feature = "gui")]
-        let result = crate::app::run(cli.scenario.as_deref(), cli.dev_state.as_deref());
+        let result = simulation(&cli)
+            .map_err(|error| error.to_string())
+            .and_then(crate::app::run);
         #[cfg(not(feature = "gui"))]
         let result: Result<(), String> =
             Err("GUI support is unavailable; rebuild with --features gui".into());
@@ -109,44 +111,39 @@ fn generate(command: &Generate) -> Result<(), String> {
 }
 
 fn create_core(cli: &Cli) -> Result<Core, CoreError> {
-    match &cli.scenario {
-        None => Core::live(Arc::new(LiveBackend::default())),
-        Some(name) => {
-            let (core, name) = scenario_core(name, cli.dev_state.as_deref())?;
+    match simulation(cli)? {
+        Some((core, name)) => {
             eprintln!("Offline simulation: {name}");
             Ok(core)
         }
+        None => Core::live(Arc::new(LiveBackend::default())),
     }
 }
 
-/// Builds a core for an offline scenario, optionally persisted at `dev_state`.
+/// The offline scenario's core and display name, when `--scenario` was given.
 ///
-/// Returns the core and the scenario's display name.
-pub(crate) fn scenario_core(
-    name: &str,
-    dev_state: Option<&Path>,
-) -> Result<(Core, String), CoreError> {
-    #[cfg(feature = "dev-tools")]
-    {
-        let loaded = crate::integrations::simulation::load(name).map_err(CoreError::Operational)?;
-        let backend = Arc::new(loaded.backend);
-        let core = match dev_state {
-            Some(path) => {
-                let core = Core::at_path(backend, path.to_path_buf());
-                core.initialize(loaded.store)?;
-                core
-            }
-            None => Core::in_memory(backend, loaded.store),
-        };
-        Ok((core, loaded.name))
-    }
-    #[cfg(not(feature = "dev-tools"))]
-    {
-        let _ = dev_state;
-        Err(CoreError::Operational(format!(
-            "scenario {name:?} requires --features dev-tools"
-        )))
-    }
+/// The simulator only exists in `dev-tools` builds, which are debug builds.
+#[cfg(feature = "dev-tools")]
+fn simulation(cli: &Cli) -> Result<Option<(Core, String)>, CoreError> {
+    let Some(name) = &cli.scenario else {
+        return Ok(None);
+    };
+    let loaded = crate::integrations::simulation::load(name).map_err(CoreError::Operational)?;
+    let backend = Arc::new(loaded.backend);
+    let core = match &cli.dev_state {
+        Some(path) => {
+            let core = Core::at_path(backend, path.clone());
+            core.initialize(loaded.store)?;
+            core
+        }
+        None => Core::in_memory(backend, loaded.store),
+    };
+    Ok(Some((core, loaded.name)))
+}
+
+#[cfg(not(feature = "dev-tools"))]
+fn simulation(_cli: &Cli) -> Result<Option<(Core, String)>, CoreError> {
+    Ok(None)
 }
 
 fn execute(cli: &Cli, core: &Core, cancel: &Cancellation) -> Result<Output, CoreError> {

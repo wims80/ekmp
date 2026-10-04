@@ -21,11 +21,13 @@ pub(super) struct Cli {
     /// Exclude killmails with protected victims from lists, for this run only.
     #[arg(long, global = true, conflicts_with = "show_protected")]
     pub(super) hide_protected: bool,
-    /// Run against a synthetic offline scenario (development builds only).
-    #[arg(long, global = true, hide = !cfg!(feature = "dev-tools"))]
+    /// Run against a synthetic offline scenario.
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, global = true)]
     pub(super) scenario: Option<String>,
     /// Persist the offline scenario's state at this path.
-    #[arg(long, global = true, requires = "scenario", hide = !cfg!(feature = "dev-tools"))]
+    #[cfg(feature = "dev-tools")]
+    #[arg(long, global = true, requires = "scenario")]
     pub(super) dev_state: Option<PathBuf>,
     #[command(subcommand)]
     pub(super) command: Command,
@@ -246,8 +248,14 @@ mod tests {
             Cli::try_parse_from(["ekmp", "characters", "add", "--paste", "--no-browser"]).is_err()
         );
     }
+    #[cfg(feature = "dev-tools")]
     #[test]
     fn dev_state_requires_scenario() {
         assert!(Cli::try_parse_from(["ekmp", "--dev-state", "x", "list"]).is_err());
+    }
+    #[cfg(not(feature = "dev-tools"))]
+    #[test]
+    fn simulator_flags_are_absent_outside_dev_tools_builds() {
+        assert!(Cli::try_parse_from(["ekmp", "--scenario", "mixed", "list"]).is_err());
     }
 }

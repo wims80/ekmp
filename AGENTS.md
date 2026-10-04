@@ -45,6 +45,8 @@
   `types.rs` owns shared errors, events, snapshots, selections, and results;
   `store.rs` owns persistence, construction, initialization, operation and
   service guards, snapshots, status summaries, and simple persisted mutations;
+  an operation works on an owned copy of the store that becomes visible to
+  other readers only when persisted;
   `characters.rs` owns authentication, removal, and refresh-token migration;
   `protection.rs` owns killmail and victim protection and the show-protected
   preference; `refresh.rs` owns refresh operations, scheduling, backoff,
@@ -52,37 +54,49 @@
   refresh, pagination, query caching, evidence reconciliation, reported-record
   pruning, and source timestamps; `posting.rs` owns confirmation, submission
   revalidation, skipped results, and session reports; `timing.rs` owns
-  cancellation, waits, system time, API cooldowns, and durable zKillboard request
-  spacing. Tests live alongside their owning modules, with shared backend and
+  cancellation, waits, API cooldowns, and durable zKillboard request spacing.
+  Integration errors convert into `CoreError` at this boundary. Tests live alongside their owning modules, with shared backend and
   store fixtures in test-only `test_support.rs`.
-- `src/cli.rs` owns Clap command parsing, terminal confirmation, JSON rendering,
-  cancellation handling, and the foreground refresh service.
-- `src/app/` owns the optional GUI shell. It renders core snapshots, GUI-only
-  textures and expansion state, and polls shared state without writing a stale
-  snapshot back to storage.
+- `src/cli.rs` owns Clap command parsing and value validation, terminal
+  confirmation, JSON rendering, cancellation handling, offline-scenario core
+  construction shared with the GUI, and the foreground refresh service.
+- `src/clock.rs` owns system time and HTTP-date conversion.
+- `src/app/` owns the optional GUI shell and its launcher. It renders core
+  snapshots, GUI-only textures and expansion state, and polls shared state
+  without writing a stale snapshot back to storage.
 - `src/app/ui/` owns egui rendering and user interactions: `mod.rs` owns the
   app frame and dispatches component actions, `theme.rs` owns shared visual
   styling, `components.rs` owns shared widgets, `dialogs.rs` owns confirmation
   dialogs, `sidebar.rs` owns sidebar rendering, and `killmail.rs` owns
-  killmail-card and detail rendering.
+  killmail-card and detail rendering. Components return action values rather
+  than writing through out-parameters.
 - `src/app/operations.rs` runs core operations and snapshot polling on background
-  threads and updates GUI presentation from their results.
+  threads. Each operation returns a completion closure that updates GUI
+  presentation from its result.
 - `src/app/worker.rs` owns the GUI image-loading worker.
 - `src/killmail.rs` owns killmail visibility, reporting status, protection,
   and submission policy.
 - `src/integrations/` owns external API integrations: EVE SSO authentication,
   ESI data access, EVE image-service portraits and logos, and zKillboard lookup
   and submission. Its single backend interface separates the live adapters from
-  the feature-gated offline simulator used by workers and UI tests.
-- `src/integrations/esi/` owns the ESI adapter: `client.rs` centralizes cached
-  HTTP behavior, `killmails.rs` assembles killmails, `universe.rs` resolves
-  EVE identities, `market.rs` estimates values, and `types.rs` contains
-  private response DTOs.
+  the feature-gated offline simulator used by workers and UI tests. `mod.rs`
+  owns the typed `ApiError`; only its `Other` kind is recoverable, and callers
+  must classify errors by kind, never by message text. `http.rs` owns the
+  shared HTTP clients, user agent, transport errors, `Retry-After` parsing, and
+  the per-backend `CooldownLog` through which adapters report API cooldowns.
+- `src/integrations/esi/` owns the ESI adapter: `client.rs` owns the `Esi`
+  client with cached GETs, POSTs, and rate-limit observation, `killmails.rs`
+  assembles killmails, `universe.rs` resolves EVE identities and protected
+  victims, `market.rs` estimates values, and `types.rs` contains private
+  response DTOs.
 - `dev/scenarios/` owns synthetic JSON scenarios for offline development. The
   `dev-tools` feature enables scenario launch in CLI-only and GUI builds;
   eframe inspection is enabled only with the `gui` feature. Live runs must
   never expose the inspection interface.
-- `src/models.rs` contains persisted and domain models.
+- `src/models.rs` contains persisted and domain models. Each cached
+  killmail's zKillboard evidence is a single `ZkillStatus`.
+- `src/persistence/mod.rs` owns the shared cache directory and private
+  file-permission helpers.
 - `src/persistence/secrets.rs` owns cross-platform refresh-token storage:
   Secret Service on Linux, Keychain on macOS, and Credential Manager on
   Windows. It also supports the common JSON fallback when a credential store

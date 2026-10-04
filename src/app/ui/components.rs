@@ -2,7 +2,7 @@ use super::{
     theme::{ACCENT, BORDER, MUTED, SUCCESS, SURFACE, SURFACE_RAISED},
     IdentityImageState, ProtectedVictimKind,
 };
-use crate::killmail::ProtectionReason;
+use crate::{killmail::ProtectionReason, models::ProtectedVictim};
 use eframe::egui;
 
 pub(super) fn accessible_button(
@@ -19,36 +19,42 @@ pub(super) fn accessible_button(
     response
 }
 
+pub(super) fn victim_kind_title(kind: ProtectedVictimKind) -> &'static str {
+    match kind {
+        ProtectedVictimKind::Character => "Character",
+        ProtectedVictimKind::Corporation => "Corporation",
+    }
+}
+
+/// Shows a manually protected victim and returns whether its removal was requested.
 pub(super) fn protected_victim_row(
     ui: &mut egui::Ui,
-    kind_label: &str,
-    name: &str,
-    id: u64,
-    enabled: bool,
-    remove: &mut Option<(ProtectedVictimKind, u64)>,
     kind: ProtectedVictimKind,
-) {
+    victim: &ProtectedVictim,
+    enabled: bool,
+) -> bool {
+    let (title, name, id) = (victim_kind_title(kind), &victim.name, victim.id);
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
             ui.label(name);
             ui.label(
-                egui::RichText::new(format!("{kind_label} {id}"))
+                egui::RichText::new(format!("{title} {id}"))
                     .small()
                     .color(MUTED),
             );
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let response = accessible_button(
+            accessible_button(
                 ui,
                 enabled,
                 egui::Button::new("Remove").small(),
-                format!("Remove protected {kind_label} {name} {id}"),
-            );
-            if response.clicked() {
-                *remove = Some((kind, id));
-            }
-        });
-    });
+                format!("Remove protected {title} {name} {id}"),
+            )
+            .clicked()
+        })
+        .inner
+    })
+    .inner
 }
 
 pub(super) fn identity_image(

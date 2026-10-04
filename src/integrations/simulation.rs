@@ -1,15 +1,19 @@
+use crate::clock::unix_time;
 use crate::{
     integrations::{
         backend::{Backend, LoadKillmailsOutcome},
-        zkill,
+        zkill, ApiError, ApiResult,
     },
-    models::{Character, Killmail, ProtectedVictim, ProtectedVictimKind, Store, ZkillCacheEntry},
+    models::{
+        Character, Killmail, ProtectedVictim, ProtectedVictimKind, Store, ZkillEntry, ZkillPage,
+        ZkillStatus,
+    },
 };
 use serde::Deserialize;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
     sync::{atomic::AtomicBool, Mutex},
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 #[derive(Deserialize)]
@@ -52,24 +56,11 @@ pub(crate) struct LoadedScenario {
 }
 
 pub(crate) struct SimulatorBackend {
+    /// The simulated world; its initial store and connection queue are moved out on load.
+    scenario: Scenario,
     known_characters: Vec<Character>,
     connect_characters: Mutex<VecDeque<Character>>,
-    killmails: Vec<Killmail>,
-    resolved_characters: Vec<ProtectedVictim>,
-    resolved_corporations: Vec<ProtectedVictim>,
-    reported_kills: HashMap<u64, Vec<u64>>,
-    reported_losses: HashMap<u64, Vec<u64>>,
-    post_results: HashMap<u64, ScenarioPostResult>,
-    load_error: Option<String>,
-    status_error: Option<String>,
     posted_ids: Mutex<Vec<u64>>,
-}
-
-fn unix_time() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 
 pub(crate) fn load(name: &str) -> Result<LoadedScenario, String> {
@@ -90,36 +81,27 @@ fn load_json(json: &str) -> Result<LoadedScenario, String> {
         serde_json::from_str(json).map_err(|error| format!("invalid scenario JSON: {error}"))?;
     validate(&scenario)?;
 
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
+    let now = unix_time();
     for id in &scenario.confirmed_unreported_ids {
-        scenario.initial_store.zkill_cache.insert(
+        scenario.initial_store.zkill_status.insert(
             *id,
-            ZkillCacheEntry {
-                reported: false,
-                checked_at: now,
+            ZkillStatus::Unreported {
+                valid_until: now + 60 * 60,
             },
         );
     }
 
-    let mut known_characters = scenario.initial_store.characters.clone();
-    known_characters.extend(scenario.connect_characters.iter().cloned());
+    let store = std::mem::take(&mut scenario.initial_store);
+    let connect_characters = std::mem::take(&mut scenario.connect_characters);
+    let mut known_characters = store.characters.clone();
+    known_characters.extend(connect_characters.iter().cloned());
     Ok(LoadedScenario {
-        name: scenario.name,
-        store: scenario.initial_store,
+        name: scenario.name.clone(),
+        store,
         backend: SimulatorBackend {
+            scenario,
             known_characters,
-            connect_characters: Mutex::new(scenario.connect_characters.into()),
-            killmails: scenario.killmails,
-            resolved_characters: scenario.resolved_characters,
-            resolved_corporations: scenario.resolved_corporations,
-            reported_kills: scenario.reported_kills,
-            reported_losses: scenario.reported_losses,
-            post_results: scenario.post_results,
-            load_error: scenario.load_error,
-            status_error: scenario.status_error,
+            connect_characters: Mutex::new(connect_characters.into()),
             posted_ids: Mutex::new(Vec::new()),
         },
     })
@@ -149,24 +131,19 @@ impl SimulatorBackend {
         reported: &HashMap<u64, Vec<u64>>,
         character_id: u64,
         page: usize,
-    ) -> Result<zkill::LookupPage, String> {
-        if let Some(error) = &self.status_error {
-            return Err(error.clone());
-        }
-        if page != 1 {
-            return Ok(zkill::LookupPage {
-                entries: Vec::new(),
-                observed_at: unix_time(),
-                valid_until: unix_time() + 60 * 60,
-            });
+    ) -> ApiResult<ZkillPage> {
+        if let Some(error) = &self.scenario.status_error {
+            return Err(error.clone().into());
         }
         let entries = reported
             .get(&character_id)
+            .filter(|_| page == 1)
             .into_iter()
             .flatten()
-            .map(|id| zkill::KillEntry {
+            .map(|id| ZkillEntry {
                 killmail_id: *id,
                 killmail_time: self
+                    .scenario
                     .killmails
                     .iter()
                     .find(|mail| mail.id == *id)
@@ -175,7 +152,7 @@ impl SimulatorBackend {
             })
             .collect();
         let observed_at = unix_time();
-        Ok(zkill::LookupPage {
+        Ok(ZkillPage {
             entries,
             observed_at,
             valid_until: observed_at + 60 * 60,
@@ -194,7 +171,7 @@ impl Backend for SimulatorBackend {
         _cancelled: &AtomicBool,
         _open_browser: bool,
         _on_authorization_url: &dyn Fn(&str),
-    ) -> Result<Character, String> {
+    ) -> ApiResult<Character> {
         self.connect_characters
             .lock()
             .map_err(|_| "simulation character queue is unavailable".to_string())?
@@ -206,9 +183,9 @@ impl Backend for SimulatorBackend {
         &self,
         character: &mut Character,
         cancelled: &AtomicBool,
-    ) -> Result<(), String> {
+    ) -> ApiResult<()> {
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err("Operation cancelled".into());
+            return Err(ApiError::Cancelled);
         }
         let known = self
             .known_characters
@@ -229,15 +206,15 @@ impl Backend for SimulatorBackend {
         _cached_killmails: &[Killmail],
         _reported_ids: &HashSet<u64>,
         cancelled: &AtomicBool,
-        _on_character_updated: &mut dyn FnMut(&Character) -> Result<(), String>,
-    ) -> Result<LoadKillmailsOutcome, String> {
+        _on_character_updated: &mut dyn FnMut(&Character) -> ApiResult<()>,
+    ) -> ApiResult<LoadKillmailsOutcome> {
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
-            return Err("Operation cancelled".into());
+            return Err(ApiError::Cancelled);
         }
-        match &self.load_error {
-            Some(error) => Err(error.clone()),
+        match &self.scenario.load_error {
+            Some(error) => Err(error.clone().into()),
             None => Ok(LoadKillmailsOutcome {
-                killmails: self.killmails.clone(),
+                killmails: self.scenario.killmails.clone(),
                 character_failures: Vec::new(),
             }),
         }
@@ -247,10 +224,10 @@ impl Backend for SimulatorBackend {
         &self,
         kind: ProtectedVictimKind,
         query: &str,
-    ) -> Result<ProtectedVictim, String> {
+    ) -> ApiResult<ProtectedVictim> {
         let candidates = match kind {
-            ProtectedVictimKind::Character => &self.resolved_characters,
-            ProtectedVictimKind::Corporation => &self.resolved_corporations,
+            ProtectedVictimKind::Character => &self.scenario.resolved_characters,
+            ProtectedVictimKind::Corporation => &self.scenario.resolved_corporations,
         };
         candidates
             .iter()
@@ -258,52 +235,48 @@ impl Backend for SimulatorBackend {
                 victim.name.eq_ignore_ascii_case(query) || query == victim.id.to_string()
             })
             .cloned()
-            .ok_or_else(|| format!("the simulation has no exact protected victim {query:?}"))
+            .ok_or_else(|| format!("the simulation has no exact protected victim {query:?}").into())
     }
 
-    fn character_killmail_page(
+    fn killmail_page(
         &self,
+        kind: zkill::MailKind,
         character_id: u64,
         page: usize,
-    ) -> Result<zkill::LookupPage, String> {
-        self.status_page(&self.reported_kills, character_id, page)
+    ) -> ApiResult<ZkillPage> {
+        let reported = match kind {
+            zkill::MailKind::Kills => &self.scenario.reported_kills,
+            zkill::MailKind::Losses => &self.scenario.reported_losses,
+        };
+        self.status_page(reported, character_id, page)
     }
 
-    fn character_loss_killmail_page(
-        &self,
-        character_id: u64,
-        page: usize,
-    ) -> Result<zkill::LookupPage, String> {
-        self.status_page(&self.reported_losses, character_id, page)
-    }
-
-    fn post(&self, mail: &Killmail) -> Result<zkill::PostOutcome, String> {
+    fn post(&self, mail: &Killmail) -> ApiResult<zkill::PostOutcome> {
         self.posted_ids
             .lock()
             .map_err(|_| "simulation post ledger is unavailable".to_string())?
             .push(mail.id);
-        match self.post_results.get(&mail.id) {
-            Some(ScenarioPostResult::New) => Ok(zkill::PostOutcome {
-                new: true,
-                url: format!("https://example.invalid/kill/{}/", mail.id),
-            }),
-            Some(ScenarioPostResult::Existing) => Ok(zkill::PostOutcome {
-                new: false,
-                url: format!("https://example.invalid/kill/{}/", mail.id),
-            }),
-            Some(ScenarioPostResult::Error { message }) => Err(message.clone()),
+        match self.scenario.post_results.get(&mail.id) {
+            Some(result @ (ScenarioPostResult::New | ScenarioPostResult::Existing)) => {
+                Ok(zkill::PostOutcome {
+                    new: matches!(result, ScenarioPostResult::New),
+                    url: format!("https://example.invalid/kill/{}/", mail.id),
+                })
+            }
+            Some(ScenarioPostResult::Error { message }) => Err(message.clone().into()),
             None => Err(format!(
                 "simulation has no configured post result for killmail {}",
                 mail.id
-            )),
+            )
+            .into()),
         }
     }
 
-    fn save_refresh_token(&self, _character_id: u64, _token: &str) -> Result<(), String> {
+    fn save_refresh_token(&self, _character_id: u64, _token: &str) -> ApiResult<()> {
         Ok(())
     }
 
-    fn delete_refresh_token(&self, _character_id: u64) -> Result<(), String> {
+    fn delete_refresh_token(&self, _character_id: u64) -> ApiResult<()> {
         Ok(())
     }
 
@@ -326,10 +299,13 @@ mod tests {
     fn failed_simulated_submission_is_recorded_without_changing_cached_state() {
         let loaded = load("errors").unwrap();
         assert!(!loaded.store.characters.is_empty());
-        let mail = &loaded.backend.killmails[0];
+        let mail = &loaded.backend.scenario.killmails[0];
         assert!(loaded.backend.post(mail).is_err());
         assert_eq!(*loaded.backend.posted_ids.lock().unwrap(), vec![mail.id]);
-        assert!(!loaded.store.zkill_cache[&mail.id].reported);
+        assert!(matches!(
+            loaded.store.zkill_status[&mail.id],
+            ZkillStatus::Unreported { .. }
+        ));
     }
 
     #[test]

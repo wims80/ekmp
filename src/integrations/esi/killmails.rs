@@ -1,158 +1,100 @@
 use super::{
-    active_cooldown_error, cached_get_json, client::observe_rate_limit, enrich_locations,
-    esi_limit_error, estimate_killmail_value, estimate_stored_killmail_value, http_client,
-    market_prices, Character, Client, Detail, EsiCache, HashMap, HashSet, Item, Killmail,
-    KillmailAttacker, KillmailDetail, KillmailItem, KillmailLocation, KillmailVictimDetail, Recent,
-    UniverseName, USER_AGENT, USER_AGENT_VALUE,
+    check_cancelled, enrich_locations, estimate_killmail_value, market_prices, Character, Detail,
+    Esi, HashMap, HashSet, Item, Killmail, KillmailAttacker, KillmailDetail, KillmailItem,
+    KillmailLocation, KillmailVictimDetail, Recent, UniverseName,
 };
-use crate::integrations::backend::{CharacterRefreshFailure, LoadKillmailsOutcome};
+use crate::integrations::{
+    backend::{CharacterRefreshFailure, LoadKillmailsOutcome},
+    ApiResult,
+};
 use std::sync::atomic::AtomicBool;
 
 pub(super) fn load_killmails_at(
-    esi: &str,
+    esi: &Esi,
     chars: &[Character],
     cached_killmails: &[Killmail],
     reported_ids: &HashSet<u64>,
     cancelled: &AtomicBool,
-    cache: &mut Option<EsiCache>,
-    mut access_token: impl FnMut(&mut Character) -> Result<String, String>,
-) -> Result<LoadKillmailsOutcome, String> {
-    let client = http_client()?;
+    mut access_token: impl FnMut(&mut Character) -> ApiResult<String>,
+) -> ApiResult<LoadKillmailsOutcome> {
     let mut pending = Vec::new();
     let mut positions = HashMap::new();
     let mut character_failures = Vec::new();
     for c in chars {
-        super::check_cancelled(cancelled)?;
+        check_cancelled(cancelled)?;
         let mut current_character = c.clone();
-        let response: Vec<Recent> =
-            match super::with_rate_limit_scope(format!("character:{}", c.id), || {
-                cached_get_json(
-                    &client,
-                    cache,
-                    format!("{esi}/characters/{}/killmails/recent/", c.id),
-                    true,
-                    || {
-                        let token = access_token(&mut current_character)?;
-                        super::check_cancelled(cancelled)?;
-                        Ok(Some(token))
-                    },
-                    "Recent killmail request",
-                )
-            }) {
-                Ok(response) => response,
-                Err(error)
-                    if !error.contains("error limit")
-                        && !error.contains("rate limited")
-                        && !error.contains("rate budget")
-                        && !error.contains("Persistence failure")
-                        && error != "Operation cancelled" =>
-                {
-                    character_failures.push(CharacterRefreshFailure {
-                        character_id: c.id,
-                        character_name: c.name.clone(),
-                        error,
-                    });
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
+        let response: Vec<Recent> = match esi.get_authed(
+            &format!("/characters/{}/killmails/recent/", c.id),
+            &format!("character:{}", c.id),
+            || {
+                let token = access_token(&mut current_character)?;
+                check_cancelled(cancelled)?;
+                Ok(token)
+            },
+            "Recent killmail request",
+        ) {
+            Ok(response) => response,
+            Err(error) if error.is_fatal() => return Err(error),
+            Err(error) => {
+                character_failures.push(CharacterRefreshFailure {
+                    character_id: c.id,
+                    character_name: c.name.clone(),
+                    error: error.to_string(),
+                });
+                continue;
+            }
+        };
         for recent in response {
             if !reported_ids.contains(&recent.killmail_id) {
                 add_pending(&mut pending, &mut positions, recent, c);
             }
         }
     }
-    if pending.is_empty() {
-        let mut killmails = Vec::new();
-        retain_failed_character_cache(
-            &mut killmails,
-            cached_killmails,
-            reported_ids,
-            &character_failures,
-        );
-        return Ok(LoadKillmailsOutcome {
-            killmails,
-            character_failures,
-        });
-    }
-    super::check_cancelled(cancelled)?;
-    let market_prices = match market_prices(&client, esi, cache) {
-        Ok(prices) => prices,
-        Err(error)
-            if error.contains("error limit")
-                || error.contains("rate limited")
-                || error.contains("rate budget") =>
-        {
-            return Err(error);
-        }
-        Err(_) => HashMap::new(),
-    };
-    let cached_by_id = cached_killmails
-        .iter()
-        .map(|mail| (mail.id, mail))
-        .collect::<HashMap<_, _>>();
-    let mut mails = pending
-        .into_iter()
-        .map(|pending| -> Result<Killmail, String> {
-            super::check_cancelled(cancelled)?;
-            let recent = &pending.recent;
-            if let Some(cached) = cached_by_id
-                .get(&recent.killmail_id)
-                .filter(|cached| cached.hash == recent.killmail_hash && cached.detail.is_some())
-            {
-                let mut mail = (*cached).clone();
+    let mut mails = Vec::new();
+    if !pending.is_empty() {
+        check_cancelled(cancelled)?;
+        let market_prices = match market_prices(esi) {
+            Ok(prices) => prices,
+            Err(error) if error.is_fatal() => return Err(error),
+            Err(_) => HashMap::new(),
+        };
+        let cached_by_id = cached_killmails
+            .iter()
+            .map(|mail| (mail.id, mail))
+            .collect::<HashMap<_, _>>();
+        mails = pending
+            .into_iter()
+            .map(|pending| -> ApiResult<Killmail> {
+                check_cancelled(cancelled)?;
+                let recent = &pending.recent;
+                let mut mail = match cached_by_id
+                    .get(&recent.killmail_id)
+                    .filter(|cached| cached.hash == recent.killmail_hash && cached.detail.is_some())
+                {
+                    Some(cached) => (*cached).clone(),
+                    None => {
+                        let detail: Detail = esi.get_uncached(
+                            &format!("/killmails/{}/{}", recent.killmail_id, recent.killmail_hash),
+                            &format!("Killmail {} request", recent.killmail_id),
+                        )?;
+                        new_killmail(recent, detail)
+                    }
+                };
                 mail.sources = pending.sources;
-                mail.estimated_value_isk = estimate_stored_killmail_value(&mail, &market_prices);
-                return Ok(mail);
-            }
-            let detail: Detail = cached_get_json(
-                &client,
-                cache,
-                format!(
-                    "{esi}/killmails/{}/{}",
-                    recent.killmail_id, recent.killmail_hash
-                ),
-                false,
-                || Ok(None),
-                &format!("Killmail {} request", recent.killmail_id),
-            )?;
-            let estimated_value_isk = estimate_killmail_value(&detail.victim, &market_prices);
-            let time = detail.killmail_time.clone();
-            Ok(Killmail {
-                id: recent.killmail_id,
-                hash: recent.killmail_hash.clone(),
-                sources: pending.sources,
-                victim_id: detail.victim.character_id,
-                victim_corporation_id: detail.victim.corporation_id,
-                victim: detail
-                    .victim
-                    .character_id
-                    .map(|id| format!("Character {id}"))
-                    .unwrap_or_else(|| "Unknown character".into()),
-                ship: detail
-                    .victim
-                    .ship_type_id
-                    .map(|id| format!("Type {id}"))
-                    .unwrap_or_else(|| "Unknown ship".into()),
-                time,
-                estimated_value_isk,
-                detail: Some(convert_detail(detail)),
+                mail.estimated_value_isk = mail
+                    .detail
+                    .as_ref()
+                    .and_then(|detail| estimate_killmail_value(detail, &market_prices));
+                Ok(mail)
             })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+            .collect::<ApiResult<Vec<_>>>()?;
 
-    enrich_locations(&client, esi, cache, &mut mails, cancelled)?;
-    match resolve_names(&client, esi, &mails, cancelled) {
-        Ok(names) => apply_names(&mut mails, &names),
-        Err(error)
-            if error == "Operation cancelled"
-                || error.contains("error limit")
-                || error.contains("rate limited")
-                || error.contains("rate budget") =>
-        {
-            return Err(error);
+        enrich_locations(esi, &mut mails, cancelled)?;
+        match resolve_names(esi, &mails, cancelled) {
+            Ok(names) => apply_names(&mut mails, &names),
+            Err(error) if error.is_fatal() => return Err(error),
+            Err(_) => {}
         }
-        Err(_) => {}
     }
     retain_failed_character_cache(
         &mut mails,
@@ -164,6 +106,29 @@ pub(super) fn load_killmails_at(
         killmails: mails,
         character_failures,
     })
+}
+
+fn new_killmail(recent: &Recent, detail: Detail) -> Killmail {
+    Killmail {
+        id: recent.killmail_id,
+        hash: recent.killmail_hash.clone(),
+        sources: Vec::new(),
+        victim_id: detail.victim.character_id,
+        victim_corporation_id: detail.victim.corporation_id,
+        victim: detail
+            .victim
+            .character_id
+            .map(|id| format!("Character {id}"))
+            .unwrap_or_else(|| "Unknown character".into()),
+        ship: detail
+            .victim
+            .ship_type_id
+            .map(|id| format!("Type {id}"))
+            .unwrap_or_else(|| "Unknown ship".into()),
+        time: detail.killmail_time.clone(),
+        estimated_value_isk: None,
+        detail: Some(convert_detail(detail)),
+    }
 }
 
 fn retain_failed_character_cache(
@@ -234,7 +199,7 @@ pub(super) struct PendingKillmail {
     pub(super) sources: Vec<crate::models::CharacterSource>,
 }
 
-fn convert_detail(detail: Detail) -> KillmailDetail {
+pub(super) fn convert_detail(detail: Detail) -> KillmailDetail {
     KillmailDetail {
         victim: KillmailVictimDetail {
             corporation_name: None,
@@ -287,11 +252,10 @@ fn convert_item(item: Item) -> KillmailItem {
 }
 
 fn resolve_names(
-    client: &Client,
-    esi: &str,
+    esi: &Esi,
     mails: &[Killmail],
     cancelled: &AtomicBool,
-) -> Result<HashMap<u64, String>, String> {
+) -> ApiResult<HashMap<u64, String>> {
     let mut ids = HashSet::new();
     for mail in mails {
         if let Some(id) = mail.victim_id {
@@ -318,37 +282,9 @@ fn resolve_names(
     ids.sort_unstable();
     let mut names = HashMap::new();
     for chunk in ids.chunks(1_000) {
-        super::check_cancelled(cancelled)?;
-        if let Some(error) = active_cooldown_error() {
-            return Err(error);
-        }
-        let response = client
-            .post(format!("{esi}/universe/names/"))
-            .header(USER_AGENT, USER_AGENT_VALUE)
-            .json(chunk)
-            .send()
-            .map_err(|error| {
-                if error.is_timeout() {
-                    "EVE bulk name lookup timed out".to_string()
-                } else if error.is_connect() {
-                    "EVE bulk name lookup could not connect".to_string()
-                } else {
-                    "EVE bulk name lookup transport failed".to_string()
-                }
-            })?;
-        observe_rate_limit(&response);
-        if let Some(error) = esi_limit_error(&response, "EVE bulk name lookup") {
-            return Err(error);
-        }
-        if !response.status().is_success() {
-            return Err(format!(
-                "EVE bulk name lookup failed (HTTP {})",
-                response.status().as_u16()
-            ));
-        }
-        let response: Vec<UniverseName> = response
-            .json()
-            .map_err(|_| "EVE bulk name response was invalid".to_string())?;
+        check_cancelled(cancelled)?;
+        let response: Vec<UniverseName> =
+            esi.post("/universe/names/", chunk, "EVE bulk name lookup")?;
         names.extend(response.into_iter().map(|entry| (entry.id, entry.name)));
     }
     Ok(names)

@@ -1,4 +1,7 @@
-use crate::models::{ApiCooldown, Store};
+use crate::{
+    integrations::ApiError,
+    models::{ApiCooldown, Store},
+};
 use serde::Serialize;
 use std::fmt;
 
@@ -24,6 +27,16 @@ impl fmt::Display for CoreError {
 
 impl std::error::Error for CoreError {}
 
+impl From<ApiError> for CoreError {
+    fn from(error: ApiError) -> Self {
+        match error {
+            ApiError::Cancelled => Self::Cancelled,
+            ApiError::Persistence(message) => Self::Persistence(message),
+            ApiError::RateLimited(message) | ApiError::Other(message) => Self::Operational(message),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum CoreEvent {
     Progress(String),
@@ -36,7 +49,7 @@ pub(crate) struct Snapshot {
     pub(crate) status: StatusSnapshot,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Default, Serialize)]
 pub(crate) struct StatusSnapshot {
     pub(crate) authenticated_characters: usize,
     pub(crate) cached_killmails: usize,
@@ -66,10 +79,6 @@ pub(crate) struct RefreshResult {
 }
 
 impl RefreshResult {
-    pub(crate) fn has_failures(&self) -> bool {
-        self.has_failures || self.status_checks_incomplete > 0
-    }
-
     pub(super) fn idle() -> Self {
         Self {
             fetched_killmails: 0,
@@ -79,6 +88,14 @@ impl RefreshResult {
             deferred_until: None,
             messages: Vec::new(),
             has_failures: false,
+        }
+    }
+
+    pub(super) fn deferred(until: u64) -> Self {
+        Self {
+            idle: false,
+            deferred_until: Some(until),
+            ..Self::idle()
         }
     }
 }

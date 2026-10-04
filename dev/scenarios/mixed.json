@@ -9,7 +9,6 @@
         "corporation_name": "Simulated Industries"
       }
     ],
-    "zkill_status_cache_version": 2,
     "show_protected_killmails": false,
     "manually_protected_characters": [
       { "id": 4001, "name": "Protected Example" }

@@ -9,7 +9,6 @@ mod test_support;
 mod timing;
 mod types;
 
-pub(crate) use store::ServiceGuard;
 pub(crate) use timing::Cancellation;
 #[cfg(feature = "gui")]
 pub(crate) use types::CredentialMigrationResult;

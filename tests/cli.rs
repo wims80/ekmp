@@ -229,7 +229,7 @@ fn json_post_errors_do_not_expose_the_killmail_hash() {
         .unwrap()
         .as_secs()
         .saturating_sub(1);
-    before["zkill_query_cache"]["kills:1101:1"] =
+    before["zkill_pages"]["kills:1101:1"] =
         serde_json::json!({"entries":[],"observed_at":observed_at,"valid_until":observed_at+3600});
     fs::write(state.path(), serde_json::to_vec(&before).unwrap()).unwrap();
 
@@ -240,16 +240,14 @@ fn json_post_errors_do_not_expose_the_killmail_hash() {
     assert_eq!(output.status.code(), Some(1));
     let failed: serde_json::Value =
         serde_json::from_slice(&fs::read(state.path()).unwrap()).unwrap();
-    let attempt = failed["post_attempts"]["9101"]["attempted_at"]
-        .as_u64()
-        .expect("durable attempt marker");
-    assert!(failed["zkill_cache"]["9101"].is_null());
+    let attempt = failed["zkill_status"]["9101"].clone();
+    assert_eq!(attempt["state"], "post_attempted", "durable attempt marker");
     let retried = run_named_scenario(&state, "errors", &["--json", "post", "9101", "--yes"]);
     assert_eq!(retried.status.code(), Some(1));
     assert!(stderr(&retried).contains("could not be confirmed"));
     let after: serde_json::Value =
         serde_json::from_slice(&fs::read(state.path()).unwrap()).unwrap();
-    assert_eq!(after["post_attempts"]["9101"]["attempted_at"], attempt);
+    assert_eq!(after["zkill_status"]["9101"], attempt);
 }
 
 #[test]
@@ -365,7 +363,8 @@ fn uncertain_submission_survives_restart_and_override_cannot_bypass_evidence() {
         .unwrap()
         .as_secs()
         + 60;
-    store["post_attempts"]["9002"] = serde_json::json!({"attempted_at": future});
+    let attempt = serde_json::json!({"state": "post_attempted", "attempted_at": future});
+    store["zkill_status"]["9002"] = attempt.clone();
     fs::write(state.path(), serde_json::to_vec(&store).unwrap()).unwrap();
     let result = run_scenario(
         &state,
@@ -375,8 +374,7 @@ fn uncertain_submission_survives_restart_and_override_cannot_bypass_evidence() {
     assert!(stderr(&result).contains("could not be confirmed"));
     let after: serde_json::Value =
         serde_json::from_slice(&fs::read(state.path()).unwrap()).unwrap();
-    assert_eq!(after["post_attempts"]["9002"]["attempted_at"], future);
-    assert_ne!(after["zkill_cache"]["9002"]["reported"], true);
+    assert_eq!(after["zkill_status"]["9002"], attempt);
 }
 
 #[test]
@@ -413,17 +411,16 @@ fn persisted_cooldown_blocks_lookup_and_submission_in_new_processes() {
     let known = run_scenario(&state, &["--json", "post", "9001", "--yes"]);
     assert_eq!(known.status.code(), Some(1));
     assert!(stdout(&known).contains("cooldown"));
-    store["zkill_cache"].as_object_mut().unwrap().remove("9001");
-    store["zkill_valid_until"]
+    store["zkill_status"]
         .as_object_mut()
         .unwrap()
         .remove("9001");
-    store["zkill_query_cache"] = serde_json::json!({});
+    store["zkill_pages"] = serde_json::json!({});
     fs::write(state.path(), serde_json::to_vec(&store).unwrap()).unwrap();
     let unknown = run_scenario(&state, &["--json", "post", "9001", "--yes"]);
     assert_eq!(unknown.status.code(), Some(1));
     let after: serde_json::Value =
         serde_json::from_slice(&fs::read(state.path()).unwrap()).unwrap();
-    assert!(after["zkill_query_cache"].as_object().unwrap().is_empty());
-    assert!(after["post_attempts"]["9001"].is_null());
+    assert!(after["zkill_pages"].as_object().unwrap().is_empty());
+    assert!(after["zkill_status"]["9001"].is_null());
 }

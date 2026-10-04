@@ -1,29 +1,13 @@
 use crate::{
-    integrations::auth,
-    integrations::backend::LoadKillmailsOutcome,
+    integrations::{auth, backend::LoadKillmailsOutcome, http::CooldownLog, ApiError, ApiResult},
     models::{
-        ApiCooldown, Character, Killmail, KillmailAttacker, KillmailDetail, KillmailItem,
-        KillmailLocation, KillmailVictimDetail, ProtectedVictimKind,
+        Character, Killmail, KillmailAttacker, KillmailDetail, KillmailItem, KillmailLocation,
+        KillmailVictimDetail, ProtectedVictimKind,
     },
-    persistence::esi_cache::{CachedResponse, EsiCache},
 };
-use reqwest::{
-    blocking::Client,
-    header::{
-        HeaderMap, CACHE_CONTROL, ETAG, EXPIRES, IF_MODIFIED_SINCE, IF_NONE_MATCH, LAST_MODIFIED,
-        RETRY_AFTER, USER_AGENT,
-    },
-    StatusCode,
-};
-use serde::de::DeserializeOwned;
 use std::{
-    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex, OnceLock,
-    },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 mod client;
@@ -32,131 +16,37 @@ mod market;
 mod types;
 mod universe;
 
-use client::{cached_get_json, esi_limit_error};
+use client::Esi;
 #[cfg(test)]
 use killmails::add_pending;
 use killmails::load_killmails_at;
-use market::{estimate_killmail_value, estimate_stored_killmail_value};
+use market::estimate_killmail_value;
 use types::*;
 #[cfg(test)]
 use universe::{matching_protected_victim, resolve_protected_victim_name_at};
-pub use universe::{
-    refresh_character_affiliation, resolve_character_name, resolve_corporation_name,
-    resolve_protected_victim_name,
-};
+pub use universe::{refresh_character_affiliation, resolve_protected_victim};
 
 const ESI: &str = "https://esi.evetech.net/latest";
-const USER_AGENT_VALUE: &str = concat!(
-    "ekmp/",
-    env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/wims80/ekmp)"
-);
-
-struct ObservedCooldown {
-    owner: std::thread::ThreadId,
-    cooldown: ApiCooldown,
-}
-
-static OBSERVED_COOLDOWNS: OnceLock<Mutex<Vec<ObservedCooldown>>> = OnceLock::new();
-thread_local! {
-    static RATE_GATE_UNTIL: Cell<u64> = const { Cell::new(0) };
-    static RATE_SCOPE: RefCell<Option<String>> = const { RefCell::new(None) };
-}
-
-fn with_rate_limit_scope<T>(scope: String, operation: impl FnOnce() -> T) -> T {
-    let previous = RATE_SCOPE.with(|current| current.replace(Some(scope)));
-    let result = operation();
-    RATE_SCOPE.with(|current| current.replace(previous));
-    result
-}
-
-fn rate_limit_scope() -> Option<String> {
-    RATE_SCOPE.with(|scope| scope.borrow().clone())
-}
-
-pub fn take_api_cooldowns() -> Vec<ApiCooldown> {
-    RATE_GATE_UNTIL.set(0);
-    let mut cooldowns = OBSERVED_COOLDOWNS
-        .get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let owner = std::thread::current().id();
-    let mut own = Vec::new();
-    cooldowns.retain(|observed| {
-        if observed.owner == owner {
-            own.push(observed.cooldown.clone());
-            false
-        } else {
-            true
-        }
-    });
-    own
-}
-
-fn record_cooldown(cooldown: ApiCooldown) {
-    RATE_GATE_UNTIL.set(RATE_GATE_UNTIL.get().max(cooldown.until));
-    OBSERVED_COOLDOWNS
-        .get_or_init(|| Mutex::new(Vec::new()))
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .push(ObservedCooldown {
-            owner: std::thread::current().id(),
-            cooldown,
-        });
-}
-
-fn active_cooldown_error() -> Option<String> {
-    let now = unix_time();
-    let until = RATE_GATE_UNTIL.get();
-    (until > now).then(|| {
-        format!(
-            "ESI rate budget requires retry after {} seconds",
-            until.saturating_sub(now)
-        )
-    })
-}
-
-fn unix_time() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-fn http_client() -> Result<Client, String> {
-    Client::builder()
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(30))
-        .build()
-        .map_err(|_| "Could not configure the HTTP client".to_string())
-}
 
 pub fn load_killmails(
     chars: &[Character],
     cached_killmails: &[Killmail],
     reported_ids: &HashSet<u64>,
     cancelled: &AtomicBool,
-    on_character_updated: &mut dyn FnMut(&Character) -> Result<(), String>,
-) -> Result<LoadKillmailsOutcome, String> {
-    let mut cache = EsiCache::open().ok();
+    cooldowns: &CooldownLog,
+    on_character_updated: &mut dyn FnMut(&Character) -> ApiResult<()>,
+) -> ApiResult<LoadKillmailsOutcome> {
     load_killmails_at(
-        ESI,
+        &Esi::live(cooldowns)?,
         chars,
         cached_killmails,
         reported_ids,
         cancelled,
-        &mut cache,
         |character| auth::access_token(character, on_character_updated),
     )
 }
 
-fn enrich_locations(
-    client: &Client,
-    esi: &str,
-    cache: &mut Option<EsiCache>,
-    mails: &mut [Killmail],
-    cancelled: &AtomicBool,
-) -> Result<(), String> {
+fn enrich_locations(esi: &Esi, mails: &mut [Killmail], cancelled: &AtomicBool) -> ApiResult<()> {
     let mut locations = HashMap::new();
     for system_id in mails.iter().filter_map(|mail| {
         mail.detail.as_ref().and_then(|detail| {
@@ -171,51 +61,11 @@ fn enrich_locations(
         if locations.contains_key(&system_id) {
             continue;
         }
-        let location = (|| -> Result<KillmailLocation, String> {
-            check_cancelled(cancelled)?;
-            let system: SolarSystemInfo = cached_get_json(
-                client,
-                cache,
-                format!("{esi}/universe/systems/{system_id}/"),
-                true,
-                || Ok(None),
-                &format!("Solar system lookup for {system_id}"),
-            )?;
-            check_cancelled(cancelled)?;
-            let constellation: ConstellationInfo = cached_get_json(
-                client,
-                cache,
-                format!("{esi}/universe/constellations/{}/", system.constellation_id),
-                true,
-                || Ok(None),
-                &format!("Constellation lookup for {}", system.constellation_id),
-            )?;
-            check_cancelled(cancelled)?;
-            let region: Name = cached_get_json(
-                client,
-                cache,
-                format!("{esi}/universe/regions/{}/", constellation.region_id),
-                true,
-                || Ok(None),
-                &format!("Region lookup for {}", constellation.region_id),
-            )?;
-            Ok(KillmailLocation {
-                solar_system_id: system_id,
-                solar_system_name: system.name,
-                region_id: Some(constellation.region_id),
-                region_name: Some(region.name),
-            })
-        })();
-        match location {
+        match location(esi, system_id, cancelled) {
             Ok(location) => {
                 locations.insert(system_id, location);
             }
-            Err(error)
-                if error.contains("error limit; retry")
-                    || error.contains("rate limited; retry") =>
-            {
-                return Err(error);
-            }
+            Err(error) if error.is_fatal() => return Err(error),
             Err(_) => {}
         }
     }
@@ -229,59 +79,56 @@ fn enrich_locations(
     Ok(())
 }
 
-fn check_cancelled(cancelled: &AtomicBool) -> Result<(), String> {
+fn location(esi: &Esi, system_id: u64, cancelled: &AtomicBool) -> ApiResult<KillmailLocation> {
+    let system: SolarSystemInfo = esi.get(
+        &format!("/universe/systems/{system_id}/"),
+        &format!("Solar system lookup for {system_id}"),
+    )?;
+    check_cancelled(cancelled)?;
+    let constellation_id = system.constellation_id;
+    let constellation: ConstellationInfo = esi.get(
+        &format!("/universe/constellations/{constellation_id}/"),
+        &format!("Constellation lookup for {constellation_id}"),
+    )?;
+    check_cancelled(cancelled)?;
+    let region_id = constellation.region_id;
+    let region: Name = esi.get(
+        &format!("/universe/regions/{region_id}/"),
+        &format!("Region lookup for {region_id}"),
+    )?;
+    Ok(KillmailLocation {
+        solar_system_id: system_id,
+        solar_system_name: system.name,
+        region_id: Some(region_id),
+        region_name: Some(region.name),
+    })
+}
+
+fn check_cancelled(cancelled: &AtomicBool) -> ApiResult<()> {
     if cancelled.load(Ordering::Relaxed) {
-        Err("Operation cancelled".into())
+        Err(ApiError::Cancelled)
     } else {
         Ok(())
     }
 }
 
-fn character_info(
-    client: &Client,
-    esi: &str,
-    id: u64,
-    cache: &mut Option<EsiCache>,
-) -> Result<CharacterInfo, String> {
-    cached_get_json(
-        client,
-        cache,
-        format!("{esi}/characters/{id}/"),
-        true,
-        || Ok(None),
+fn character_info(esi: &Esi, id: u64) -> ApiResult<CharacterInfo> {
+    esi.get(
+        &format!("/characters/{id}/"),
         &format!("Character name lookup for {id}"),
     )
 }
 
-fn corporation_name(
-    client: &Client,
-    esi: &str,
-    id: u64,
-    cache: &mut Option<EsiCache>,
-) -> Result<String, String> {
-    let info: Name = cached_get_json(
-        client,
-        cache,
-        format!("{esi}/corporations/{id}/"),
-        true,
-        || Ok(None),
+fn corporation_name(esi: &Esi, id: u64) -> ApiResult<String> {
+    let info: Name = esi.get(
+        &format!("/corporations/{id}/"),
         &format!("Corporation name lookup for {id}"),
     )?;
     Ok(info.name)
 }
-fn market_prices(
-    client: &Client,
-    esi: &str,
-    cache: &mut Option<EsiCache>,
-) -> Result<HashMap<u64, f64>, String> {
-    let prices: Vec<MarketPrice> = cached_get_json(
-        client,
-        cache,
-        format!("{esi}/markets/prices/"),
-        true,
-        || Ok(None),
-        "Market price request",
-    )?;
+
+fn market_prices(esi: &Esi) -> ApiResult<HashMap<u64, f64>> {
+    let prices: Vec<MarketPrice> = esi.get("/markets/prices/", "Market price request")?;
     Ok(prices
         .into_iter()
         .filter_map(|price| {
@@ -292,9 +139,11 @@ fn market_prices(
         })
         .collect())
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{integrations::backend::LoadKillmailsOutcome, persistence::esi_cache::EsiCache};
     use httpmock::prelude::*;
     use std::{
         fs,
@@ -315,12 +164,6 @@ mod tests {
     }
 
     #[test]
-    fn user_agent_identifies_the_application_and_source() {
-        assert!(USER_AGENT_VALUE.starts_with("ekmp/"));
-        assert!(USER_AGENT_VALUE.contains("https://github.com/wims80/ekmp"));
-    }
-
-    #[test]
     fn protected_victim_name_resolution_uses_the_selected_category() {
         let response = UniverseIds {
             characters: vec![UniverseEntity {
@@ -338,6 +181,23 @@ mod tests {
                 .unwrap();
 
         assert_eq!(corporation.id, 84);
+    }
+
+    fn load(
+        server: &MockServer,
+        chars: &[Character],
+        cached_killmails: &[Killmail],
+        reported_ids: &HashSet<u64>,
+        cooldowns: &CooldownLog,
+    ) -> ApiResult<LoadKillmailsOutcome> {
+        load_killmails_at(
+            &Esi::new(&server.base_url(), None, cooldowns).unwrap(),
+            chars,
+            cached_killmails,
+            reported_ids,
+            &AtomicBool::new(false),
+            |_| Ok("sentinel-token".into()),
+        )
     }
 
     fn character(id: u64, name: &str) -> Character {
@@ -392,26 +252,16 @@ mod tests {
         });
         let path = temporary_cache_path();
         {
-            let mut cache = Some(EsiCache::open_at(&path).unwrap());
-            let url = format!("{}/characters/2/", server.base_url());
-            let first: CharacterInfo = cached_get_json(
-                &Client::new(),
-                &mut cache,
-                url.clone(),
-                true,
-                || Ok(None),
-                "Character name lookup",
+            let cooldowns = CooldownLog::default();
+            let base_url = server.base_url();
+            let esi = Esi::new(
+                &base_url,
+                Some(EsiCache::open_at(&path).unwrap()),
+                &cooldowns,
             )
             .unwrap();
-            let second: CharacterInfo = cached_get_json(
-                &Client::new(),
-                &mut cache,
-                url,
-                true,
-                || Ok(None),
-                "Character name lookup",
-            )
-            .unwrap();
+            let first: CharacterInfo = esi.get("/characters/2/", "Character name lookup").unwrap();
+            let second: CharacterInfo = esi.get("/characters/2/", "Character name lookup").unwrap();
 
             assert_eq!(first.name, "Cached Pilot");
             assert_eq!(second.corporation_id, 20);
@@ -432,11 +282,9 @@ mod tests {
         });
         let path = temporary_cache_path();
         {
-            let mut cache = Some(EsiCache::open_at(&path).unwrap());
+            let cache = EsiCache::open_at(&path).unwrap();
             let url = format!("{}/characters/2/", server.base_url());
             cache
-                .as_ref()
-                .unwrap()
                 .store(
                     &url,
                     br#"{"name":"Cached Pilot","corporation_id":20}"#,
@@ -446,18 +294,15 @@ mod tests {
                 )
                 .unwrap();
 
-            let response: CharacterInfo = cached_get_json(
-                &Client::new(),
-                &mut cache,
-                url.clone(),
-                true,
-                || Ok(None),
-                "Character name lookup",
-            )
-            .unwrap();
+            let cooldowns = CooldownLog::default();
+            let base_url = server.base_url();
+            let esi = Esi::new(&base_url, Some(cache), &cooldowns).unwrap();
+            let response: CharacterInfo =
+                esi.get("/characters/2/", "Character name lookup").unwrap();
 
             assert_eq!(response.name, "Cached Pilot");
-            assert!(cache.as_ref().unwrap().load(&url).unwrap().unwrap().fresh);
+            let cache = EsiCache::open_at(&path).unwrap();
+            assert!(cache.load(&url).unwrap().unwrap().fresh);
         }
         request.assert_calls(1);
         fs::remove_dir_all(path.parent().unwrap()).unwrap();
@@ -466,10 +311,11 @@ mod tests {
     #[test]
     fn loads_killmails_through_the_configured_http_endpoint() {
         let server = MockServer::start();
+        let cooldowns = CooldownLog::default();
         let recent = server.mock(|when, then| {
             when.method(GET)
                 .path("/characters/1/killmails/recent/")
-                .header("authorization", "Bearer synthetic-token");
+                .header("authorization", "Bearer sentinel-token");
             then.status(200)
                 .header("content-type", "application/json")
                 .body(r#"[{"killmail_id":42,"killmail_hash":"fixture-hash"}]"#);
@@ -511,14 +357,12 @@ mod tests {
                 .body(r#"{"name":"The Forge"}"#);
         });
 
-        let mails = load_killmails_at(
-            &server.base_url(),
+        let mails = load(
+            &server,
             &[character(1, "Pilot")],
             &[],
             &HashSet::new(),
-            &AtomicBool::new(false),
-            &mut None,
-            |_| Ok("synthetic-token".into()),
+            &cooldowns,
         )
         .unwrap()
         .killmails;
@@ -546,8 +390,61 @@ mod tests {
     }
 
     #[test]
+    fn rate_budget_during_location_lookup_stops_the_refresh() {
+        let server = MockServer::start();
+        let cooldowns = CooldownLog::default();
+        server.mock(|when, then| {
+            when.method(GET).path("/characters/1/killmails/recent/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"[{"killmail_id":42,"killmail_hash":"fixture-hash"}]"#);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/killmails/42/fixture-hash");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"killmail_time":"2026-08-16T10:00:00Z","solar_system_id":30000142,"victim":{"damage_taken":1},"attackers":[]}"#);
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/markets/prices/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body("[]");
+        });
+        server.mock(|when, then| {
+            when.method(GET).path("/universe/systems/30000142/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .header("x-ratelimit-limit", "10/15m")
+                .header("x-ratelimit-remaining", "0")
+                .body(r#"{"name":"Jita","constellation_id":20000020}"#);
+        });
+        let names = server.mock(|when, then| {
+            when.method(POST).path("/universe/names/");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body("[]");
+        });
+
+        let result = load(
+            &server,
+            &[character(1, "Pilot")],
+            &[],
+            &HashSet::new(),
+            &cooldowns,
+        );
+
+        assert!(
+            matches!(&result, Err(ApiError::RateLimited(error)) if error.contains("rate budget"))
+        );
+        names.assert_calls(0);
+        cooldowns.take();
+    }
+
+    #[test]
     fn matching_cached_detail_is_reused_and_source_membership_is_refreshed() {
         let server = MockServer::start();
+        let cooldowns = CooldownLog::default();
         server.mock(|when, then| {
             when.method(GET).path("/characters/1/killmails/recent/");
             then.status(200)
@@ -584,14 +481,12 @@ mod tests {
         )
         .unwrap();
 
-        let mails = load_killmails_at(
-            &server.base_url(),
+        let mails = load(
+            &server,
             &[character(1, "New Source")],
             &[cached],
             &HashSet::new(),
-            &AtomicBool::new(false),
-            &mut None,
-            |_| Ok("synthetic-token".into()),
+            &cooldowns,
         )
         .unwrap()
         .killmails;
@@ -606,6 +501,7 @@ mod tests {
     #[test]
     fn positively_reported_ids_are_filtered_before_detail_and_price_requests() {
         let server = MockServer::start();
+        let cooldowns = CooldownLog::default();
         server.mock(|when, then| {
             when.method(GET).path("/characters/1/killmails/recent/");
             then.status(200)
@@ -613,14 +509,12 @@ mod tests {
                 .body(r#"[{"killmail_id":42,"killmail_hash":"fixture-hash"}]"#);
         });
 
-        let mails = load_killmails_at(
-            &server.base_url(),
+        let mails = load(
+            &server,
             &[character(1, "Pilot")],
             &[],
             &HashSet::from([42]),
-            &AtomicBool::new(false),
-            &mut None,
-            |_| Ok("synthetic-token".into()),
+            &cooldowns,
         )
         .unwrap()
         .killmails;
@@ -630,8 +524,8 @@ mod tests {
 
     #[test]
     fn market_rate_limit_stops_before_killmail_detail_requests() {
-        let _ = take_api_cooldowns();
         let server = MockServer::start();
+        let cooldowns = CooldownLog::default();
         server.mock(|when, then| {
             when.method(GET).path("/characters/1/killmails/recent/");
             then.status(200)
@@ -650,31 +544,29 @@ mod tests {
             then.status(200).body("{}");
         });
 
-        let error = match load_killmails_at(
-            &server.base_url(),
+        let error = match load(
+            &server,
             &[character(1, "Pilot")],
             &[],
             &HashSet::new(),
-            &AtomicBool::new(false),
-            &mut None,
-            |_| Ok("sentinel-token".into()),
+            &cooldowns,
         ) {
-            Err(error) => error,
-            Ok(_) => panic!("rate-limited refresh unexpectedly succeeded"),
+            Err(ApiError::RateLimited(error)) => error,
+            other => panic!("expected a rate-limit error, got {:?}", other.err()),
         };
 
         assert!(error.contains("rate limited"));
         assert!(!error.contains("sentinel"));
         detail.assert_calls(0);
-        let cooldowns = take_api_cooldowns();
+        let cooldowns = cooldowns.take();
         assert_eq!(cooldowns.len(), 1);
         assert_eq!(cooldowns[0].scope.as_deref(), Some("market"));
     }
 
     #[test]
     fn exhausted_esi_error_budget_stops_the_next_character_request() {
-        let _ = take_api_cooldowns();
         let server = MockServer::start();
+        let cooldowns = CooldownLog::default();
         server.mock(|when, then| {
             when.method(GET).path("/characters/1/killmails/recent/");
             then.status(200)
@@ -690,19 +582,19 @@ mod tests {
                 .body("[]");
         });
 
-        let result = load_killmails_at(
-            &server.base_url(),
+        let result = load(
+            &server,
             &[character(1, "One"), character(2, "Two")],
             &[],
             &HashSet::new(),
-            &AtomicBool::new(false),
-            &mut None,
-            |_| Ok("sentinel-token".into()),
+            &cooldowns,
         );
 
-        assert!(matches!(result, Err(error) if error.contains("rate budget")));
+        assert!(
+            matches!(result, Err(ApiError::RateLimited(error)) if error.contains("rate budget"))
+        );
         second.assert_calls(0);
-        let cooldowns = take_api_cooldowns();
+        let cooldowns = cooldowns.take();
         assert_eq!(cooldowns.len(), 1);
         assert_eq!(
             cooldowns[0].reason.as_deref(),
@@ -712,8 +604,8 @@ mod tests {
 
     #[test]
     fn low_group_budget_defers_detail_requests() {
-        let _ = take_api_cooldowns();
         let server = MockServer::start();
+        let cooldowns = CooldownLog::default();
         server.mock(|when, then| {
             when.method(GET).path("/characters/1/killmails/recent/");
             then.status(200)
@@ -734,38 +626,44 @@ mod tests {
             then.status(200).body("{}");
         });
 
-        let result = load_killmails_at(
-            &server.base_url(),
+        let result = load(
+            &server,
             &[character(1, "Pilot")],
             &[],
             &HashSet::new(),
-            &AtomicBool::new(false),
-            &mut None,
-            |_| Ok("sentinel-token".into()),
+            &cooldowns,
         );
 
-        assert!(matches!(result, Err(error) if error.contains("rate budget")));
+        assert!(
+            matches!(result, Err(ApiError::RateLimited(error)) if error.contains("rate budget"))
+        );
         detail.assert_calls(0);
-        let cooldowns = take_api_cooldowns();
+        let cooldowns = cooldowns.take();
         assert_eq!(cooldowns[0].scope.as_deref(), Some("market"));
         assert_eq!(cooldowns[0].reason.as_deref(), Some("low rate budget"));
     }
 
     #[test]
     fn recursive_estimate_prefers_average_prices_and_keeps_partial_totals() {
-        let victim: Victim = serde_json::from_str(
+        let detail: Detail = serde_json::from_str(
             r#"{
-                "ship_type_id":1,
-                "items":[{
-                    "item_type_id":2,"quantity_destroyed":2,
-                    "items":[{"item_type_id":3,"quantity_dropped":4}]
-                }]
+                "killmail_time":"2026-08-16T10:00:00Z",
+                "solar_system_id":1,
+                "victim":{
+                    "ship_type_id":1,
+                    "items":[{
+                        "item_type_id":2,"quantity_destroyed":2,
+                        "items":[{"item_type_id":3,"quantity_dropped":4}]
+                    }]
+                }
             }"#,
         )
         .unwrap();
+        let detail = killmails::convert_detail(detail);
         let prices = HashMap::from([(1, 10.0), (2, 5.0), (3, 2.0)]);
 
-        assert_eq!(estimate_killmail_value(&victim, &prices), Some(28.0));
+        assert_eq!(estimate_killmail_value(&detail, &prices), Some(28.0));
+        assert_eq!(estimate_killmail_value(&detail, &HashMap::new()), None);
     }
 
     #[test]
@@ -778,8 +676,10 @@ mod tests {
                 .body(r#"{"characters":[{"id":42,"name":"Fixture Pilot"}]}"#);
         });
 
+        let cooldowns = CooldownLog::default();
+        let base_url = server.base_url();
         let result = resolve_protected_victim_name_at(
-            &server.base_url(),
+            &Esi::new(&base_url, None, &cooldowns).unwrap(),
             ProtectedVictimKind::Character,
             "Fixture Pilot",
         )

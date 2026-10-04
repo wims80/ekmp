@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{
     killmail::{is_bulk_candidate, is_eligible_for_bulk_posting, report_state, ReportState},
-    models::{PostAttempt, ZkillCacheEntry},
+    models::{Killmail, Store, ZkillStatus},
 };
 
 const MAX_SESSION_REPORTS: usize = 200;
@@ -130,37 +130,14 @@ impl Core {
                     .push(skipped(id, "killmail is no longer in the cache"));
                 continue;
             };
-            let state = report_state(locked.store(), id, now);
-            let protected = !is_eligible_for_bulk_posting(locked.store(), &mail);
-            let permitted = state == ReportState::Unreported
-                && match prepared.mode {
-                    PostMode::Bulk => !protected,
-                    PostMode::Individual => !protected,
-                    PostMode::ProtectedIndividual => prepared.ids.len() == 1,
-                };
-            if !permitted {
-                let reason: String = match state {
-                    ReportState::Reported => "killmail is already reported".into(),
-                    ReportState::Unknown => "killmail status is no longer confirmed".into(),
-                    ReportState::Unreported if protected => {
-                        "victim protection changed after confirmation".into()
-                    }
-                    ReportState::Unreported => "killmail is no longer eligible".into(),
-                };
+            if let Err(reason) = post_permission(locked.store(), &mail, prepared, now) {
                 batch.results.push(skipped(id, reason));
                 continue;
             }
 
             reserve_zkill_request(&mut locked, self.backend.request_spacing(), cancelled)?;
             let dispatch_at = unix_time();
-            let current_state = report_state(locked.store(), id, dispatch_at);
-            let currently_protected = !is_eligible_for_bulk_posting(locked.store(), &mail);
-            let still_permitted = current_state == ReportState::Unreported
-                && match prepared.mode {
-                    PostMode::Bulk | PostMode::Individual => !currently_protected,
-                    PostMode::ProtectedIndividual => prepared.ids.len() == 1,
-                };
-            if !still_permitted {
+            if post_permission(locked.store(), &mail, prepared, dispatch_at).is_err() {
                 batch.results.push(skipped(
                     id,
                     "killmail eligibility expired while waiting for request spacing",
@@ -168,11 +145,9 @@ impl Core {
                 continue;
             }
             self.progress(format!("Submitting killmail {id} to zKillboard"));
-            locked.store_mut().zkill_cache.remove(&id);
-            locked.store_mut().zkill_valid_until.remove(&id);
-            locked.store_mut().post_attempts.insert(
+            locked.store_mut().zkill_status.insert(
                 id,
-                PostAttempt {
+                ZkillStatus::PostAttempted {
                     attempted_at: dispatch_at,
                 },
             );
@@ -187,14 +162,10 @@ impl Core {
             merge_api_cooldowns(locked.store_mut(), self.backend.take_api_cooldowns());
             match outcome {
                 Ok(outcome) => {
-                    locked.store_mut().zkill_cache.insert(
-                        id,
-                        ZkillCacheEntry {
-                            reported: true,
-                            checked_at: unix_time(),
-                        },
-                    );
-                    locked.store_mut().post_attempts.remove(&id);
+                    locked
+                        .store_mut()
+                        .zkill_status
+                        .insert(id, ZkillStatus::Reported);
                     prune_reported(locked.store_mut());
                     // The authoritative reported ID must be durable before another POST.
                     locked.persist()?;
@@ -223,7 +194,7 @@ impl Core {
                         killmail_id: id,
                         status: PostResultStatus::Failed,
                         url: None,
-                        message: Some(error),
+                        message: Some(error.to_string()),
                     });
                 }
             }
@@ -244,6 +215,28 @@ impl Core {
         }
     }
 }
+/// Revalidates a confirmed post against the current store immediately before submission.
+fn post_permission(
+    store: &Store,
+    mail: &Killmail,
+    prepared: &PreparedPost,
+    now: u64,
+) -> Result<(), &'static str> {
+    let protected = !is_eligible_for_bulk_posting(store, mail);
+    match report_state(store, mail.id, now) {
+        ReportState::Reported => Err("killmail is already reported"),
+        ReportState::Unknown => Err("killmail status is no longer confirmed"),
+        ReportState::Unreported => match prepared.mode {
+            PostMode::Bulk | PostMode::Individual if protected => {
+                Err("victim protection changed after confirmation")
+            }
+            PostMode::Bulk | PostMode::Individual => Ok(()),
+            PostMode::ProtectedIndividual if prepared.ids.len() == 1 => Ok(()),
+            PostMode::ProtectedIndividual => Err("killmail is no longer eligible"),
+        },
+    }
+}
+
 fn skipped(id: u64, message: impl Into<String>) -> PostResult {
     PostResult {
         killmail_id: id,
@@ -324,7 +317,12 @@ mod tests {
         backend.spacing_ms.store(1_000, Ordering::Relaxed);
         let now = unix_time();
         let mut store = postable_store();
-        store.zkill_valid_until.insert(42, now + 1);
+        store.zkill_status.insert(
+            42,
+            ZkillStatus::Unreported {
+                valid_until: now + 1,
+            },
+        );
         store.zkill_next_request_at_ms = now.saturating_add(1).saturating_mul(1_000) + 25;
         let core = Core::in_memory(backend.clone(), store);
         let prepared = core
@@ -349,14 +347,12 @@ mod tests {
         let mut store = postable_store();
         let now = unix_time();
         store.cached_killmails.push(mail(43));
-        store.zkill_cache.insert(
+        store.zkill_status.insert(
             43,
-            ZkillCacheEntry {
-                reported: false,
-                checked_at: now,
+            ZkillStatus::Unreported {
+                valid_until: now + 3_600,
             },
         );
-        store.zkill_valid_until.insert(43, now + 3_600);
         let core = Core::in_memory_with_persist_budget(backend.clone(), store, 1);
         let prepared = PreparedPost {
             ids: vec![42, 43],
@@ -380,14 +376,12 @@ mod tests {
         let mut store = postable_store();
         let now = unix_time();
         store.cached_killmails.push(mail(43));
-        store.zkill_cache.insert(
+        store.zkill_status.insert(
             43,
-            ZkillCacheEntry {
-                reported: false,
-                checked_at: now,
+            ZkillStatus::Unreported {
+                valid_until: now + 3_600,
             },
         );
-        store.zkill_valid_until.insert(43, now + 3_600);
         let core = Core::in_memory(backend.clone(), store);
 
         let result = core
@@ -404,6 +398,9 @@ mod tests {
         assert_eq!(result.results.len(), 1);
         assert_eq!(result.results[0].status, PostResultStatus::Submitted);
         assert_eq!(backend.posts.load(Ordering::Relaxed), 1);
-        assert!(core.snapshot().unwrap().store.zkill_cache[&42].reported);
+        assert_eq!(
+            core.snapshot().unwrap().store.zkill_status[&42],
+            ZkillStatus::Reported
+        );
     }
 }

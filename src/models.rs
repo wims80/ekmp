@@ -4,35 +4,19 @@ use std::collections::HashMap;
 pub const DEFAULT_REFRESH_INTERVAL_SECS: u64 = 15 * 60;
 
 #[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct Store {
     pub characters: Vec<Character>,
-    #[serde(default)]
-    pub zkill_cache: HashMap<u64, ZkillCacheEntry>,
-    #[serde(default)]
-    pub zkill_status_cache_version: u8,
-    #[serde(default)]
+    pub zkill_status: HashMap<u64, ZkillStatus>,
     pub show_protected_killmails: bool,
-    #[serde(default)]
     pub cached_killmails: Vec<Killmail>,
-    #[serde(default)]
     pub manually_protected_characters: Vec<ProtectedVictim>,
-    #[serde(default)]
     pub manually_protected_corporations: Vec<ProtectedVictim>,
-    #[serde(default)]
     pub manually_protected_killmail_ids: Vec<u64>,
-    #[serde(default = "default_refresh_interval_secs")]
     pub refresh_interval_secs: u64,
-    #[serde(default)]
     pub refresh_schedule: RefreshSchedule,
-    #[serde(default)]
     pub api_cooldowns: Vec<ApiCooldown>,
-    #[serde(default)]
-    pub zkill_valid_until: HashMap<u64, u64>,
-    #[serde(default)]
-    pub post_attempts: HashMap<u64, PostAttempt>,
-    #[serde(default)]
-    pub zkill_query_cache: HashMap<String, ZkillQueryCacheEntry>,
-    #[serde(default)]
+    pub zkill_pages: HashMap<String, ZkillPage>,
     pub zkill_next_request_at_ms: u64,
 }
 
@@ -40,8 +24,7 @@ impl Default for Store {
     fn default() -> Self {
         Self {
             characters: Vec::new(),
-            zkill_cache: HashMap::new(),
-            zkill_status_cache_version: 0,
+            zkill_status: HashMap::new(),
             show_protected_killmails: false,
             cached_killmails: Vec::new(),
             manually_protected_characters: Vec::new(),
@@ -50,16 +33,10 @@ impl Default for Store {
             refresh_interval_secs: DEFAULT_REFRESH_INTERVAL_SECS,
             refresh_schedule: RefreshSchedule::default(),
             api_cooldowns: Vec::new(),
-            zkill_valid_until: HashMap::new(),
-            post_attempts: HashMap::new(),
-            zkill_query_cache: HashMap::new(),
+            zkill_pages: HashMap::new(),
             zkill_next_request_at_ms: 0,
         }
     }
-}
-
-const fn default_refresh_interval_secs() -> u64 {
-    DEFAULT_REFRESH_INTERVAL_SECS
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -88,28 +65,31 @@ pub struct ApiCooldown {
     pub reason: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PostAttempt {
-    pub attempted_at: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ZkillQueryCacheEntry {
-    pub entries: Vec<ZkillQueryKillmail>,
+/// One page of a character's killmails on zKillboard, also cached to avoid repeated queries.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZkillPage {
+    pub entries: Vec<ZkillEntry>,
+    /// Time represented by the source response, rather than local cache-read time.
     pub observed_at: u64,
     pub valid_until: u64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ZkillQueryKillmail {
-    pub id: u64,
-    pub time: String,
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ZkillEntry {
+    pub killmail_id: u64,
+    pub killmail_time: String,
 }
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
-pub struct ZkillCacheEntry {
-    pub reported: bool,
-    pub checked_at: u64,
+/// The last known zKillboard status of a cached killmail.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ZkillStatus {
+    /// zKillboard has the killmail. Retained as a compact reported-ID cache.
+    Reported,
+    /// zKillboard was confirmed not to have the killmail until `valid_until`.
+    Unreported { valid_until: u64 },
+    /// A submission was dispatched at `attempted_at` and its outcome is unknown.
+    PostAttempted { attempted_at: u64 },
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -140,6 +120,16 @@ pub struct ProtectedVictim {
 pub enum ProtectedVictimKind {
     Character,
     Corporation,
+}
+
+impl ProtectedVictimKind {
+    /// The lowercase noun for this kind of victim.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Character => "character",
+            Self::Corporation => "corporation",
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -257,15 +247,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(store.characters.len(), 1);
-        assert!(store.zkill_cache.is_empty());
-        assert_eq!(store.zkill_status_cache_version, 0);
+        assert!(store.zkill_status.is_empty());
         assert!(!store.show_protected_killmails);
         assert!(store.cached_killmails.is_empty());
         assert!(store.manually_protected_characters.is_empty());
         assert!(store.manually_protected_corporations.is_empty());
         assert!(store.manually_protected_killmail_ids.is_empty());
         assert_eq!(store.refresh_interval_secs, DEFAULT_REFRESH_INTERVAL_SECS);
-        assert!(store.post_attempts.is_empty());
         assert_eq!(store.characters[0].refresh_token.as_deref(), Some("token"));
         assert_eq!(store.characters[0].corporation_id, None);
     }
@@ -300,20 +288,12 @@ mod tests {
             name: "Protected Corp".into(),
         });
         store.manually_protected_killmail_ids.push(10);
-        store.zkill_cache.insert(
-            42,
-            ZkillCacheEntry {
-                reported: true,
-                checked_at: 123,
-            },
-        );
+        store.zkill_status.insert(42, ZkillStatus::Reported);
 
         let json = serde_json::to_string(&store).unwrap();
         let restored: Store = serde_json::from_str(&json).unwrap();
 
-        let entry = restored.zkill_cache[&42];
-        assert!(entry.reported);
-        assert_eq!(entry.checked_at, 123);
+        assert_eq!(restored.zkill_status[&42], ZkillStatus::Reported);
         assert!(restored.show_protected_killmails);
         assert_eq!(restored.cached_killmails.len(), 1);
         assert_eq!(restored.cached_killmails[0].id, 7);
@@ -324,7 +304,6 @@ mod tests {
         assert_eq!(restored.manually_protected_characters[0].id, 8);
         assert_eq!(restored.manually_protected_corporations[0].id, 9);
         assert_eq!(restored.manually_protected_killmail_ids, vec![10]);
-        assert_eq!(restored.zkill_status_cache_version, 0);
     }
 
     #[test]

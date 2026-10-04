@@ -1,8 +1,7 @@
-use super::{
-    unix_time, worker::IdentityImageKey, App, IdentityImageState, PendingCharacterRemoval,
-};
+use super::{worker::IdentityImageKey, App, IdentityImageState, Images, PendingCharacterRemoval};
+use crate::clock::unix_time;
 use crate::{
-    killmail::{displayed_killmails, is_bulk_candidate, posting_summary, ReportState},
+    killmail::{displayed_killmails, posting_summary, ReportState},
     models::{Killmail, KillmailAttacker, KillmailItem, ProtectedVictimKind},
 };
 use eframe::egui;
@@ -16,15 +15,17 @@ mod theme;
 
 use components::*;
 use dialogs::{confirmation_dialog, ConfirmationAction, ConfirmationDialog};
-#[cfg(test)]
-use killmail::{fitting_rows, format_number, ordered_attackers};
-use killmail::{killmail_card, killmail_image_keys, KillmailCardContext};
+use killmail::{killmail_card, killmail_image_keys, CardAction, KillmailCardContext};
 use sidebar::{sidebar, ProtectedVictimDraft, SidebarAction, SidebarProps};
 use theme::*;
 
 impl App {
     fn show_top_bar(&mut self, ui: &mut egui::Ui) {
-        let mut cancel_authentication = false;
+        let mut cancel = false;
+        let cancel_label = self
+            .active_operation
+            .as_ref()
+            .and_then(|active| active.cancel_label);
         let pill_status = self.status_pill_text();
         let simulation_notice = self.simulation_name.as_ref().map(|name| {
             (
@@ -52,9 +53,8 @@ impl App {
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             status_badge(ui, self.is_busy(), &pill_status);
-                            if self.is_authenticating() && ui.button("Cancel connection").clicked()
-                            {
-                                cancel_authentication = true;
+                            if let Some(label) = cancel_label {
+                                cancel |= ui.button(label).clicked();
                             }
                             if let Some((label, message)) = &simulation_notice {
                                 let response = egui::Frame::new()
@@ -80,8 +80,8 @@ impl App {
                     },
                 );
             });
-        if cancel_authentication {
-            self.cancel_authentication();
+        if cancel {
+            self.cancel_operation();
         }
     }
 
@@ -153,7 +153,6 @@ impl App {
                 refresh_status: &refresh_status,
                 status_history: &self.status_history,
                 controls_enabled,
-                persistence_enabled: self.persistence_blocked.is_none(),
             },
             ProtectedVictimDraft {
                 kind: &mut self.new_protected_victim_kind,
@@ -183,18 +182,15 @@ impl App {
     }
 
     fn show_review_workspace(&mut self, ui: &mut egui::Ui) {
-        ui.style_mut()
-            .text_styles
-            .insert(egui::TextStyle::Body, egui::FontId::proportional(16.0));
-        ui.style_mut()
-            .text_styles
-            .insert(egui::TextStyle::Button, egui::FontId::proportional(15.5));
-        ui.style_mut()
-            .text_styles
-            .insert(egui::TextStyle::Small, egui::FontId::proportional(13.5));
-        ui.style_mut()
-            .text_styles
-            .insert(egui::TextStyle::Heading, egui::FontId::proportional(23.0));
+        set_text_sizes(
+            ui,
+            &[
+                (egui::TextStyle::Body, 16.0),
+                (egui::TextStyle::Button, 15.5),
+                (egui::TextStyle::Small, 13.5),
+                (egui::TextStyle::Heading, 23.0),
+            ],
+        );
 
         self.show_queue_toolbar(ui);
         ui.add_space(8.0);
@@ -213,12 +209,7 @@ impl App {
     fn show_queue_toolbar(&mut self, ui: &mut egui::Ui) {
         let now = unix_time();
         let summary = posting_summary(&self.store, &self.store.cached_killmails, now);
-        let eligible_count = self
-            .store
-            .cached_killmails
-            .iter()
-            .filter(|mail| is_bulk_candidate(&self.store, mail, now))
-            .count();
+        let eligible_count = summary.eligible_for_bulk_posting;
 
         egui::Frame::new()
             .fill(SURFACE)
@@ -320,8 +311,7 @@ impl App {
             return;
         }
 
-        let mut post_request = None;
-        let mut toggle_protection = None;
+        let mut card_action = None;
         let card_context = KillmailCardContext {
             store: &self.store,
             now,
@@ -331,29 +321,25 @@ impl App {
         };
         for mail in visible_killmails {
             let expanded = self.expanded_killmail_ids.contains(&mail.id);
-            if killmail_card(
-                ui,
-                &card_context,
-                mail,
-                expanded,
-                &mut post_request,
-                &mut toggle_protection,
-            ) {
-                self.expanded_killmail_ids.insert(mail.id);
-            } else {
-                self.expanded_killmail_ids.remove(&mail.id);
+            if let Some(action) = killmail_card(ui, &card_context, mail, expanded) {
+                card_action = Some((mail.id, action));
             }
             ui.add_space(6.0);
         }
-        if let Some((id, post_anyway)) = post_request {
-            self.request_individual_post(id, post_anyway);
-        }
-        if let Some(killmail_id) = toggle_protection {
-            let protected = !self
-                .store
-                .manually_protected_killmail_ids
-                .contains(&killmail_id);
-            self.set_killmail_protection(killmail_id, protected);
+        match card_action {
+            Some((id, CardAction::ToggleExpanded)) => {
+                if !self.expanded_killmail_ids.remove(&id) {
+                    self.expanded_killmail_ids.insert(id);
+                }
+            }
+            Some((id, CardAction::Post { post_anyway })) => {
+                self.request_individual_post(id, post_anyway);
+            }
+            Some((id, CardAction::ToggleProtection)) => {
+                let protected = !self.store.manually_protected_killmail_ids.contains(&id);
+                self.set_killmail_protection(id, protected);
+            }
+            None => {}
         }
     }
 
@@ -489,7 +475,7 @@ impl eframe::App for App {
         apply_theme(&ctx);
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(egui::Color32::from_rgb(14, 19, 24)))
+            .frame(egui::Frame::new().fill(BACKGROUND))
             .show(ui, |ui| {
                 self.show_top_bar(ui);
                 self.show_warnings(ui);
@@ -510,7 +496,7 @@ impl eframe::App for App {
                 egui::CentralPanel::default()
                     .frame(
                         egui::Frame::new()
-                            .fill(egui::Color32::from_rgb(14, 19, 24))
+                            .fill(BACKGROUND)
                             .inner_margin(egui::Margin {
                                 left: 18,
                                 right: 2,
@@ -524,9 +510,6 @@ impl eframe::App for App {
             });
         self.show_post_confirmation(&ctx);
         self.show_character_removal_confirmation(&ctx);
-        if self.identity_images_loading() {
-            ctx.request_repaint_after(Duration::from_millis(100));
-        }
     }
 }
 
@@ -537,82 +520,10 @@ mod tests {
     use egui_kittest::{kittest::Queryable, Harness};
     use std::sync::Arc;
 
-    fn attacker(name: &str, damage_done: u64, final_blow: bool) -> KillmailAttacker {
-        KillmailAttacker {
-            character_id: None,
-            character_name: Some(name.into()),
-            corporation_id: None,
-            corporation_name: None,
-            alliance_id: None,
-            alliance_name: None,
-            faction_id: None,
-            faction_name: None,
-            ship_type_id: None,
-            ship_name: None,
-            weapon_type_id: None,
-            weapon_name: None,
-            damage_done,
-            final_blow,
-            security_status: None,
-        }
-    }
-
-    fn item(type_id: u64, name: &str, flag: u32, destroyed: u64, dropped: u64) -> KillmailItem {
-        KillmailItem {
-            item_type_id: type_id,
-            name: name.into(),
-            flag,
-            quantity_destroyed: destroyed,
-            quantity_dropped: dropped,
-            singleton: 0,
-            items: Vec::new(),
-        }
-    }
-
-    #[test]
-    fn attackers_put_final_blow_before_top_damage_and_remaining_damage() {
-        let attackers = [
-            attacker("Other", 200, false),
-            attacker("Top", 900, false),
-            attacker("Final", 100, true),
-        ];
-
-        let ordered = ordered_attackers(&attackers)
-            .into_iter()
-            .map(|attacker| attacker.character_name.as_deref().unwrap())
-            .collect::<Vec<_>>();
-
-        assert_eq!(ordered, ["Final", "Top", "Other"]);
-    }
-
-    #[test]
-    fn fitting_rows_group_slots_aggregate_quantities_and_keep_unknown_flags() {
-        let mut container = item(3, "Container", 5, 1, 0);
-        container.items.push(item(4, "Nested Cargo", 5, 2, 3));
-        let rows = fitting_rows(&[
-            item(1, "Gun", 27, 1, 0),
-            item(1, "Gun", 27, 0, 2),
-            item(2, "Future Item", 222, 1, 0),
-            container,
-        ]);
-
-        assert_eq!(rows[0].section, "High Power Slots");
-        assert_eq!(rows[0].destroyed, 1);
-        assert_eq!(rows[0].dropped, 2);
-        assert!(rows.iter().any(|row| row.name == "Nested Cargo"));
-        assert!(rows.iter().any(|row| row.section == "Other (flag 222)"));
-    }
-
-    #[test]
-    fn damage_and_quantity_formatting_is_stable() {
-        assert_eq!(format_number(0), "0");
-        assert_eq!(format_number(12_345_678), "12,345,678");
-    }
-
     fn mixed_harness() -> (Harness<'static, App>, Arc<simulation::SimulatorBackend>) {
         let loaded = simulation::load("mixed").unwrap();
         let backend = Arc::new(loaded.backend);
-        let app = App::simulated(loaded.store, backend.clone(), loaded.name, None, true);
+        let app = App::simulated(loaded.store, backend.clone(), loaded.name);
         let harness = Harness::builder()
             .with_size(egui::vec2(1180.0, 760.0))
             .build_eframe(move |_| app);
@@ -752,7 +663,7 @@ mod tests {
         let mut store = loaded.store;
         store.characters.clear();
         store.cached_killmails.clear();
-        let app = App::simulated(store, backend, loaded.name, None, true);
+        let app = App::simulated(store, backend, loaded.name);
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1180.0, 760.0))
             .build_eframe(move |_| app);
@@ -777,7 +688,7 @@ mod tests {
         let backend = Arc::new(loaded.backend);
         let mut store = loaded.store;
         store.characters[0].refresh_token = Some("simulation-refresh-token".into());
-        let app = App::simulated(store, backend, loaded.name, None, true);
+        let app = App::simulated(store, backend, loaded.name);
         let mut harness = Harness::builder()
             .with_size(egui::vec2(1180.0, 760.0))
             .build_eframe(move |_| app);

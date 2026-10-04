@@ -5,14 +5,16 @@ use super::{
 use crate::{
     integrations::backend::Backend,
     killmail::{report_state, ReportState},
-    models::Store,
-    persistence::storage::{self, LockError},
+    models::{Store, ZkillStatus},
+    persistence::storage::{self, FileLock, LockError},
 };
 #[cfg(any(feature = "gui", feature = "dev-tools", test))]
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    MutexGuard,
+};
 use std::{
-    marker::PhantomData,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
@@ -20,103 +22,101 @@ use std::{
 pub(super) enum Persistence {
     File(PathBuf),
     #[cfg(any(feature = "gui", feature = "dev-tools", test))]
-    Memory {
-        store: Arc<Mutex<Store>>,
-        service_active: Arc<AtomicBool>,
-        #[cfg(test)]
-        persist_budget: Option<Arc<std::sync::atomic::AtomicIsize>>,
-    },
+    Memory(Arc<MemoryStore>),
 }
 
-pub(crate) struct ServiceGuard {
-    inner: ServiceGuardInner,
+#[cfg(any(feature = "gui", feature = "dev-tools", test))]
+pub(crate) struct MemoryStore {
+    store: Mutex<Store>,
+    service_active: AtomicBool,
+    /// Number of persists that succeed before failures are injected.
+    #[cfg(test)]
+    persist_budget: Option<std::sync::atomic::AtomicIsize>,
 }
 
-enum ServiceGuardInner {
+/// Holds the cross-process service lock until dropped.
+pub(crate) enum ServiceGuard {
     File {
-        _lock: storage::ServiceLock,
+        _lock: FileLock,
     },
     #[cfg(any(feature = "gui", feature = "dev-tools", test))]
-    Memory(Arc<AtomicBool>),
+    Memory(Arc<MemoryStore>),
 }
 
 impl Drop for ServiceGuard {
     fn drop(&mut self) {
-        match &self.inner {
-            ServiceGuardInner::File { .. } => {}
-            #[cfg(any(feature = "gui", feature = "dev-tools", test))]
-            ServiceGuardInner::Memory(active) => active.store(false, Ordering::Release),
+        #[cfg(any(feature = "gui", feature = "dev-tools", test))]
+        if let Self::Memory(memory) = self {
+            memory.service_active.store(false, Ordering::Release);
         }
     }
 }
 
+/// A working copy of the store, held under the exclusive operation lock.
+///
+/// Changes become visible to other readers only through `persist`.
 pub(super) struct LockedStore<'a> {
-    inner: LockedStoreInner<'a>,
+    store: Store,
+    target: PersistTarget<'a>,
 }
 
-enum LockedStoreInner<'a> {
+enum PersistTarget<'a> {
     File {
-        _lock: storage::OperationLock,
-        path: PathBuf,
-        store: Box<Store>,
-        _lifetime: PhantomData<&'a ()>,
+        _lock: FileLock,
+        path: &'a Path,
     },
     #[cfg(any(feature = "gui", feature = "dev-tools", test))]
     Memory {
-        store: std::sync::MutexGuard<'a, Store>,
+        shared: MutexGuard<'a, Store>,
         #[cfg(test)]
-        persist_budget: Option<Arc<std::sync::atomic::AtomicIsize>>,
+        memory: &'a MemoryStore,
     },
 }
 
 impl LockedStore<'_> {
     pub(super) fn store(&self) -> &Store {
-        match &self.inner {
-            LockedStoreInner::File { store, .. } => store,
-            #[cfg(any(feature = "gui", feature = "dev-tools", test))]
-            LockedStoreInner::Memory { store, .. } => store,
-        }
+        &self.store
     }
 
     pub(super) fn store_mut(&mut self) -> &mut Store {
-        match &mut self.inner {
-            LockedStoreInner::File { store, .. } => store,
-            #[cfg(any(feature = "gui", feature = "dev-tools", test))]
-            LockedStoreInner::Memory { store, .. } => store,
-        }
+        &mut self.store
     }
 
-    pub(super) fn persist(&self) -> CoreResult<()> {
-        match &self.inner {
-            LockedStoreInner::File { path, store, .. } => {
-                let data = serde_json::to_vec_pretty(store)
-                    .map_err(|error| CoreError::Persistence(error.to_string()))?;
-                storage::persist_to_path(path, &data).map_err(|error| {
-                    CoreError::Persistence(format!(
-                        "could not atomically write {}: {error}",
-                        path.display()
-                    ))
-                })
-            }
+    pub(super) fn persist(&mut self) -> CoreResult<()> {
+        match &mut self.target {
+            PersistTarget::File { path, .. } => save(path, &self.store),
             #[cfg(any(feature = "gui", feature = "dev-tools", test))]
-            LockedStoreInner::Memory {
+            PersistTarget::Memory {
+                shared,
                 #[cfg(test)]
-                persist_budget,
-                ..
+                memory,
             } => {
                 #[cfg(test)]
-                if let Some(budget) = persist_budget {
+                if let Some(budget) = &memory.persist_budget {
                     if budget.fetch_sub(1, Ordering::AcqRel) <= 0 {
                         return Err(CoreError::Persistence(
                             "injected persistence failure".into(),
                         ));
                     }
                 }
+                shared.clone_from(&self.store);
                 Ok(())
             }
         }
     }
 }
+
+fn save(path: &Path, store: &Store) -> CoreResult<()> {
+    let data = serde_json::to_vec_pretty(store)
+        .map_err(|error| CoreError::Persistence(error.to_string()))?;
+    storage::persist_to_path(path, &data).map_err(|error| {
+        CoreError::Persistence(format!(
+            "could not atomically write {}: {error}",
+            path.display()
+        ))
+    })
+}
+
 impl Core {
     pub(crate) fn live(backend: Arc<dyn Backend>) -> CoreResult<Self> {
         let path = storage::store_path().map_err(CoreError::Persistence)?;
@@ -124,27 +124,20 @@ impl Core {
     }
 
     pub(crate) fn at_path(backend: Arc<dyn Backend>, path: PathBuf) -> Self {
-        Self {
-            backend,
-            persistence: Persistence::File(path),
-            events: None,
-            session_reports: Arc::new(Mutex::new(Vec::new())),
-        }
+        Self::with_persistence(backend, Persistence::File(path))
     }
 
     #[cfg(any(feature = "gui", feature = "dev-tools", test))]
     pub(crate) fn in_memory(backend: Arc<dyn Backend>, store: Store) -> Self {
-        Self {
+        Self::with_persistence(
             backend,
-            persistence: Persistence::Memory {
-                store: Arc::new(Mutex::new(store)),
-                service_active: Arc::new(AtomicBool::new(false)),
+            Persistence::Memory(Arc::new(MemoryStore {
+                store: Mutex::new(store),
+                service_active: AtomicBool::new(false),
                 #[cfg(test)]
                 persist_budget: None,
-            },
-            events: None,
-            session_reports: Arc::new(Mutex::new(Vec::new())),
-        }
+            })),
+        )
     }
 
     #[cfg(test)]
@@ -153,15 +146,20 @@ impl Core {
         store: Store,
         successful_persists: isize,
     ) -> Self {
+        Self::with_persistence(
+            backend,
+            Persistence::Memory(Arc::new(MemoryStore {
+                store: Mutex::new(store),
+                service_active: AtomicBool::new(false),
+                persist_budget: Some(std::sync::atomic::AtomicIsize::new(successful_persists)),
+            })),
+        )
+    }
+
+    fn with_persistence(backend: Arc<dyn Backend>, persistence: Persistence) -> Self {
         Self {
             backend,
-            persistence: Persistence::Memory {
-                store: Arc::new(Mutex::new(store)),
-                service_active: Arc::new(AtomicBool::new(false)),
-                persist_budget: Some(Arc::new(std::sync::atomic::AtomicIsize::new(
-                    successful_persists,
-                ))),
-            },
+            persistence,
             events: None,
             session_reports: Arc::new(Mutex::new(Vec::new())),
         }
@@ -176,11 +174,7 @@ impl Core {
         if storage::store_exists_or_recoverable(path) {
             return Ok(());
         }
-        let data = serde_json::to_vec_pretty(&initial)
-            .map_err(|error| CoreError::Persistence(error.to_string()))?;
-        storage::persist_to_path(path, &data).map_err(|error| {
-            CoreError::Persistence(format!("could not initialize {}: {error}", path.display()))
-        })
+        save(path, &initial)
     }
 
     pub(crate) fn snapshot(&self) -> CoreResult<Snapshot> {
@@ -190,28 +184,30 @@ impl Core {
                 storage::load_from_path(path).map_err(CoreError::Persistence)?
             }
             #[cfg(any(feature = "gui", feature = "dev-tools", test))]
-            Persistence::Memory { store, .. } => {
-                store.try_lock().map_err(|_| CoreError::Busy)?.clone()
-            }
+            Persistence::Memory(memory) => memory
+                .store
+                .try_lock()
+                .map_err(|_| CoreError::Busy)?
+                .clone(),
         };
         let status = self.status_for(&store);
         Ok(Snapshot { store, status })
     }
 
-    pub(crate) fn try_service_guard(&self) -> CoreResult<super::ServiceGuard> {
-        let inner = match &self.persistence {
-            Persistence::File(path) => ServiceGuardInner::File {
+    pub(crate) fn try_service_guard(&self) -> CoreResult<ServiceGuard> {
+        match &self.persistence {
+            Persistence::File(path) => Ok(ServiceGuard::File {
                 _lock: storage::try_service_lock_for(path).map_err(core_lock_error)?,
-            },
+            }),
             #[cfg(any(feature = "gui", feature = "dev-tools", test))]
-            Persistence::Memory { service_active, .. } => {
-                service_active
+            Persistence::Memory(memory) => {
+                memory
+                    .service_active
                     .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                     .map_err(|_| CoreError::Busy)?;
-                ServiceGuardInner::Memory(Arc::clone(service_active))
+                Ok(ServiceGuard::Memory(Arc::clone(memory)))
             }
-        };
-        Ok(ServiceGuard { inner })
+        }
     }
 
     pub(super) fn simple_mutation(&self, mutation: impl FnOnce(&mut Store)) -> CoreResult<()> {
@@ -226,41 +222,32 @@ impl Core {
         match &self.persistence {
             Persistence::File(path) => {
                 let lock = storage::try_operation_lock_for(path).map_err(core_lock_error)?;
-                let store = storage::load_from_path(path).map_err(CoreError::Persistence)?;
                 Ok(LockedStore {
-                    inner: LockedStoreInner::File {
-                        _lock: lock,
-                        path: path.clone(),
-                        store: Box::new(store),
-                        _lifetime: PhantomData,
-                    },
+                    store: storage::load_from_path(path).map_err(CoreError::Persistence)?,
+                    target: PersistTarget::File { _lock: lock, path },
                 })
             }
             #[cfg(any(feature = "gui", feature = "dev-tools", test))]
-            Persistence::Memory {
-                store,
-                #[cfg(test)]
-                persist_budget,
-                ..
-            } => store
-                .try_lock()
-                .map(|store| LockedStore {
-                    inner: LockedStoreInner::Memory {
-                        store,
+            Persistence::Memory(memory) => {
+                let shared = memory.store.try_lock().map_err(|_| CoreError::Busy)?;
+                Ok(LockedStore {
+                    store: shared.clone(),
+                    target: PersistTarget::Memory {
+                        shared,
                         #[cfg(test)]
-                        persist_budget: persist_budget.clone(),
+                        memory,
                     },
                 })
-                .map_err(|_| CoreError::Busy),
+            }
         }
     }
 
     fn status_for(&self, store: &Store) -> StatusSnapshot {
         let now = unix_time();
         let reported = store
-            .zkill_cache
+            .zkill_status
             .values()
-            .filter(|entry| entry.reported)
+            .filter(|status| **status == ZkillStatus::Reported)
             .count();
         let mut unreported = 0;
         let mut awaiting_status = 0;
@@ -281,7 +268,7 @@ impl Core {
                 Err(LockError::Io(_)) => false,
             },
             #[cfg(any(feature = "gui", feature = "dev-tools", test))]
-            Persistence::Memory { service_active, .. } => service_active.load(Ordering::Acquire),
+            Persistence::Memory(memory) => memory.service_active.load(Ordering::Acquire),
         };
         let stale = store
             .refresh_schedule

@@ -1,13 +1,14 @@
 use super::{
     components::{
         accessible_button, empty_sidebar_card, identity_image, protected_victim_row, section_label,
+        victim_kind_title,
     },
-    theme::{ACCENT, ACCENT_DARK, BORDER, MUTED, SUCCESS, SURFACE, SURFACE_RAISED},
-    IdentityImageKey, IdentityImageState,
+    theme::{set_text_sizes, ACCENT, ACCENT_DARK, BORDER, MUTED, SUCCESS, SURFACE, SURFACE_RAISED},
+    IdentityImageKey, Images,
 };
 use crate::models::{Character, ProtectedVictim, ProtectedVictimKind};
 use eframe::egui;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashSet, VecDeque};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SidebarAction {
@@ -21,12 +22,11 @@ pub(super) struct SidebarProps<'a> {
     pub(super) characters: &'a [Character],
     pub(super) manually_protected_characters: &'a [ProtectedVictim],
     pub(super) manually_protected_corporations: &'a [ProtectedVictim],
-    pub(super) images: &'a HashMap<IdentityImageKey, IdentityImageState>,
+    pub(super) images: &'a Images,
     pub(super) latest_status: &'a str,
     pub(super) refresh_status: &'a str,
     pub(super) status_history: &'a VecDeque<String>,
     pub(super) controls_enabled: bool,
-    pub(super) persistence_enabled: bool,
 }
 
 pub(super) struct ProtectedVictimDraft<'a> {
@@ -40,15 +40,14 @@ pub(super) fn sidebar(
     draft: ProtectedVictimDraft<'_>,
 ) -> Option<SidebarAction> {
     let mut action = None;
-    ui.style_mut()
-        .text_styles
-        .insert(egui::TextStyle::Body, egui::FontId::proportional(15.5));
-    ui.style_mut()
-        .text_styles
-        .insert(egui::TextStyle::Button, egui::FontId::proportional(15.0));
-    ui.style_mut()
-        .text_styles
-        .insert(egui::TextStyle::Small, egui::FontId::proportional(13.5));
+    set_text_sizes(
+        ui,
+        &[
+            (egui::TextStyle::Body, 15.5),
+            (egui::TextStyle::Button, 15.0),
+            (egui::TextStyle::Small, 13.5),
+        ],
+    );
 
     let pane_height = ui.available_height().max(120.0);
     egui::ScrollArea::vertical()
@@ -285,27 +284,21 @@ fn manual_protection(
             ui.set_width(ui.available_width());
             ui.label(egui::RichText::new("Manual protection").strong());
             let mut remove = None;
-            for victim in props.manually_protected_characters {
-                protected_victim_row(
-                    ui,
-                    "Character",
-                    &victim.name,
-                    victim.id,
-                    props.persistence_enabled,
-                    &mut remove,
+            for (kind, victims) in [
+                (
                     ProtectedVictimKind::Character,
-                );
-            }
-            for victim in props.manually_protected_corporations {
-                protected_victim_row(
-                    ui,
-                    "Corporation",
-                    &victim.name,
-                    victim.id,
-                    props.persistence_enabled,
-                    &mut remove,
+                    props.manually_protected_characters,
+                ),
+                (
                     ProtectedVictimKind::Corporation,
-                );
+                    props.manually_protected_corporations,
+                ),
+            ] {
+                for victim in victims {
+                    if protected_victim_row(ui, kind, victim, props.controls_enabled) {
+                        remove = Some((kind, victim.id));
+                    }
+                }
             }
             if manual_count == 0 {
                 ui.label(egui::RichText::new("No manually protected victims").color(MUTED));
@@ -313,18 +306,15 @@ fn manual_protection(
 
             ui.add_space(8.0);
             egui::ComboBox::from_id_salt("protected_victim_kind")
-                .selected_text(match draft.kind {
-                    ProtectedVictimKind::Character => "Character",
-                    ProtectedVictimKind::Corporation => "Corporation",
-                })
+                .selected_text(victim_kind_title(*draft.kind))
                 .width(ui.available_width())
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(draft.kind, ProtectedVictimKind::Character, "Character");
-                    ui.selectable_value(
-                        draft.kind,
+                    for kind in [
+                        ProtectedVictimKind::Character,
                         ProtectedVictimKind::Corporation,
-                        "Corporation",
-                    );
+                    ] {
+                        ui.selectable_value(draft.kind, kind, victim_kind_title(kind));
+                    }
                 });
             let input_label = ui.label("Protected victim name or ID");
             ui.add(
@@ -397,7 +387,7 @@ mod tests {
         characters: Vec<Character>,
         protected_characters: Vec<ProtectedVictim>,
         protected_corporations: Vec<ProtectedVictim>,
-        images: HashMap<IdentityImageKey, IdentityImageState>,
+        images: Images,
         status_history: VecDeque<String>,
         draft_kind: ProtectedVictimKind,
         draft_query: String,
@@ -418,7 +408,6 @@ mod tests {
                         refresh_status: "Refresh has not run yet",
                         status_history: &state.status_history,
                         controls_enabled: true,
-                        persistence_enabled: true,
                     },
                     ProtectedVictimDraft {
                         kind: &mut state.draft_kind,
@@ -441,7 +430,7 @@ mod tests {
                     name: "Protected Pilot".into(),
                 }],
                 protected_corporations: Vec::new(),
-                images: HashMap::new(),
+                images: Images::new(),
                 status_history: VecDeque::from(["Ready".into()]),
                 draft_kind: ProtectedVictimKind::Character,
                 draft_query: String::new(),

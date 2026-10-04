@@ -1,11 +1,11 @@
+use super::cache_dir;
 use crate::integrations::images::IdentityImageKey;
 use std::{
     fs, io,
-    path::{Path, PathBuf},
+    path::PathBuf,
     time::{Duration, SystemTime},
 };
 
-const CACHE_DIR_NAME: &str = "ekmp";
 const IMAGE_DIR_NAME: &str = "images";
 const CACHE_FRESHNESS: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 
@@ -36,46 +36,7 @@ pub(crate) fn store(key: IdentityImageKey, bytes: &[u8]) -> Result<(), String> {
 }
 
 fn image_path(key: IdentityImageKey) -> Result<PathBuf, String> {
-    cache_dir().map(|path| path.join(key.cache_file_name()))
-}
-
-fn cache_dir() -> Result<PathBuf, String> {
-    #[cfg(windows)]
-    let base = std::env::var_os("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .ok_or("LOCALAPPDATA is not set")?;
-
-    #[cfg(target_os = "macos")]
-    let base = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .ok_or("HOME is not set")?
-        .join("Library")
-        .join("Caches");
-
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
-        .ok_or("neither XDG_CACHE_HOME nor HOME is set")?;
-
-    let path = cache_dir_path(&base);
-    fs::create_dir_all(&path).map_err(|error| error.to_string())?;
-    Ok(path)
-}
-
-fn cache_dir_path(base: &Path) -> PathBuf {
-    base.join(CACHE_DIR_NAME).join(IMAGE_DIR_NAME)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn image_cache_has_its_own_subdirectory() {
-        assert_eq!(
-            cache_dir_path(Path::new("/cache")),
-            PathBuf::from("/cache/ekmp/images")
-        );
-    }
+    let directory = cache_dir()?.join(IMAGE_DIR_NAME);
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    Ok(directory.join(key.cache_file_name()))
 }

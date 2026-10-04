@@ -1,4 +1,5 @@
 use super::{store::LockedStore, CoreError, CoreResult};
+pub(super) use crate::clock::{unix_time, unix_time_millis};
 use crate::{
     models::{ApiCooldown, Store},
     persistence::storage::LockError,
@@ -9,7 +10,7 @@ use std::{
         Arc,
     },
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::Duration,
 };
 
 #[derive(Clone, Debug)]
@@ -30,6 +31,21 @@ impl Cancellation {
 
     pub(crate) fn as_atomic(&self) -> &AtomicBool {
         &self.0
+    }
+
+    /// Sleeps for `duration` unless cancelled first; returns whether it was cancelled.
+    pub(crate) fn wait(&self, duration: Duration) -> bool {
+        let deadline = std::time::Instant::now() + duration;
+        loop {
+            if self.is_cancelled() {
+                return true;
+            }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            thread::sleep(remaining.min(Duration::from_millis(100)));
+        }
     }
 }
 
@@ -91,7 +107,7 @@ pub(super) fn reserve_zkill_request(
         .zkill_next_request_at_ms
         .saturating_sub(now_ms);
     if delay_ms > 0 {
-        cancellation_aware_wait(Duration::from_millis(delay_ms), cancelled)?;
+        cancelled.wait(Duration::from_millis(delay_ms));
     }
     check_cancelled(cancelled)?;
     let spacing_ms = u64::try_from(spacing.as_millis()).unwrap_or(u64::MAX);
@@ -100,39 +116,10 @@ pub(super) fn reserve_zkill_request(
     locked.persist()
 }
 
-pub(super) fn unix_time() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-
-pub(super) fn unix_time_millis() -> u64 {
-    u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_millis(),
-    )
-    .unwrap_or(u64::MAX)
-}
-
 pub(super) fn check_cancelled(cancelled: &Cancellation) -> CoreResult<()> {
     if cancelled.is_cancelled() {
         Err(CoreError::Cancelled)
     } else {
         Ok(())
-    }
-}
-
-fn cancellation_aware_wait(duration: Duration, cancelled: &Cancellation) -> CoreResult<()> {
-    let deadline = std::time::Instant::now() + duration;
-    loop {
-        check_cancelled(cancelled)?;
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        if remaining.is_zero() {
-            return Ok(());
-        }
-        thread::sleep(remaining.min(Duration::from_millis(100)));
     }
 }

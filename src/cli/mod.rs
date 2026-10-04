@@ -13,7 +13,7 @@ use crate::{
     integrations::backend::LiveBackend,
     killmail::displayed_killmails,
 };
-use args::{Cli, Command, Service};
+use args::{Cli, Command, Generate, Service};
 use clap::{CommandFactory, Parser};
 use commands::{characters, config, listing_store, post, protect};
 use output::{emit, emit_error, killmail_details, killmail_table, mail_output, to_json, Output};
@@ -42,6 +42,15 @@ pub(crate) fn run() -> u8 {
         let result: Result<(), String> =
             Err("GUI support is unavailable; rebuild with --features gui".into());
         return match result {
+            Ok(()) => 0,
+            Err(error) => {
+                emit_error(cli.json, &error, 1);
+                1
+            }
+        };
+    }
+    if let Command::Generate(command) = &cli.command {
+        return match generate(command) {
             Ok(()) => 0,
             Err(error) => {
                 emit_error(cli.json, &error, 1);
@@ -84,6 +93,18 @@ pub(crate) fn run() -> u8 {
             emit_error(cli.json, &error.to_string(), code);
             code
         }
+    }
+}
+
+/// Writes shell completions or man pages generated from the command definition.
+fn generate(command: &Generate) -> Result<(), String> {
+    match command {
+        Generate::Completions { shell } => {
+            clap_complete::generate(*shell, &mut Cli::command(), "ekmp", &mut std::io::stdout());
+            Ok(())
+        }
+        Generate::Man { dir } => clap_mangen::generate_to(Cli::command(), dir)
+            .map_err(|error| format!("could not write man pages to {}: {error}", dir.display())),
     }
 }
 
@@ -130,7 +151,9 @@ pub(crate) fn scenario_core(
 
 fn execute(cli: &Cli, core: &Core, cancel: &Cancellation) -> Result<Output, CoreError> {
     let output = match &cli.command {
-        Command::Gui => unreachable!("the GUI is launched before a core is created"),
+        Command::Gui | Command::Generate(_) => {
+            unreachable!("handled before a core is created")
+        }
         Command::Characters(command) => characters(command, core, cancel)?,
         Command::Refresh => {
             let result = core.refresh(cancel)?;

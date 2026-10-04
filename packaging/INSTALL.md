@@ -2,8 +2,10 @@
 
 ## Linux
 
-Extract the complete archive and run `./install.sh`. It installs the program for the current user without administrator access. `ekmp --help` opens the CLI help and `ekmp gui` opens the desktop interface; the installed desktop launcher runs `ekmp gui`. Run `./install.sh --uninstall` from the same archive to remove the program, launcher, and icon while retaining settings and caches.
+Extract the complete archive and run `./install.sh`. It installs for the current user without administrator access: `ekmp` in `~/.local/bin`, the `ekmp.service` systemd user unit, bash/zsh/fish completions, man pages, and a desktop launcher for `ekmp gui`. Run `ekmp --help` or `man ekmp` to get started, and `ekmp characters add` to sign in (`--paste` on a headless host).
 
-`ekmp.service` is an opt-in systemd user service. If periodic refreshes are wanted, copy it to `~/.config/systemd/user/`, then run `systemctl --user daemon-reload` and `systemctl --user enable --now ekmp.service`. View its logs with `journalctl --user -u ekmp`, and run `loginctl enable-linger "$USER"` to keep it running while logged out. It refreshes cached data only and never posts killmails. Installation does not enable the service.
+The refresh service is opt-in: `systemctl --user enable --now ekmp`. It refreshes cached data only and never posts killmails. View its logs with `journalctl --user -u ekmp`, and run `loginctl enable-linger "$USER"` to keep it running while logged out. Installation never enables or starts it.
+
+Run `./install.sh --uninstall` from the same archive to stop the service and remove every installed file while retaining settings, state, and caches.
 
 The program never needs an EVE client secret. Keep `~/.local/state/ekmp/`, refresh tokens, and authorization URLs private.

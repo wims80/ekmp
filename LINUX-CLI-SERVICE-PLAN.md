@@ -314,6 +314,24 @@ Done 2026-10-05:
   GUI"), Architecture (the new `cli/` modules and `persistence::paths`), and
   Persistence (the new file locations).
 
+Done 2026-10-05:
+
+- `ekmp generate completions <shell>` and `ekmp generate man <dir>` are
+  hidden, so they get no man page or help entry. Every command and global
+  option now has help text, and `--scenario`/`--dev-state` are hidden outside
+  `dev-tools` builds.
+- The release archive always ships the desktop launcher, because release
+  binaries are built with `gui`. `install.sh` installs it when the files are
+  present.
+- `install.sh` uses `install -D`. It only runs `daemon-reload`, plus a status
+  check that prints a restart hint on upgrade. It never enables or starts the
+  service. It also points out a leftover `ekmp-refresh.service`. Tested in a
+  scratch home with a fake `systemctl`.
+- CI runs shellcheck on both scripts. shellcheck wasn't available locally,
+  so its first run is in CI.
+- The Windows and macOS removals and the `AGENTS.md` updates were done in the
+  earlier phases.
+
 ## Tests added along the way
 
 - Refresh-interval floor, in both the parser and core.

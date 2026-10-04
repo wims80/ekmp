@@ -12,15 +12,20 @@ use std::{path::PathBuf, time::Duration};
     arg_required_else_help = true
 )]
 pub(super) struct Cli {
+    /// Print results as JSON, a stable interface for scripts.
     #[arg(long, global = true)]
     pub(super) json: bool,
+    /// Include killmails with protected victims in lists, for this run only.
     #[arg(long, global = true, conflicts_with = "hide_protected")]
     pub(super) show_protected: bool,
+    /// Exclude killmails with protected victims from lists, for this run only.
     #[arg(long, global = true, conflicts_with = "show_protected")]
     pub(super) hide_protected: bool,
-    #[arg(long, global = true)]
+    /// Run against a synthetic offline scenario (development builds only).
+    #[arg(long, global = true, hide = !cfg!(feature = "dev-tools"))]
     pub(super) scenario: Option<String>,
-    #[arg(long, global = true, requires = "scenario")]
+    /// Persist the offline scenario's state at this path.
+    #[arg(long, global = true, requires = "scenario", hide = !cfg!(feature = "dev-tools"))]
     pub(super) dev_state: Option<PathBuf>,
     #[command(subcommand)]
     pub(super) command: Command,
@@ -30,6 +35,7 @@ pub(super) struct Cli {
 pub(super) enum Command {
     /// Open the desktop interface (requires a build with the gui feature).
     Gui,
+    /// List, add, or remove authenticated characters.
     #[command(subcommand)]
     Characters(Characters),
     /// Refresh cached recent killmails and reporting statuses.
@@ -43,17 +49,31 @@ pub(super) enum Command {
     },
     /// Explicitly submit selected confirmed-unreported killmails.
     Post(PostArgs),
+    /// Manage protected victims and killmails, which bulk posting never includes.
     #[command(subcommand)]
     Protect(Protect),
+    /// Read or change preferences in config.toml.
     #[command(subcommand)]
     Config(Config),
+    /// Run the refresh service, normally from the ekmp.service systemd user unit.
     #[command(subcommand)]
     Service(Service),
     /// Show cached counts, refresh schedule and service status.
     Status,
+    /// Generate shell completions or man pages; used when packaging.
+    #[command(subcommand, hide = true)]
+    Generate(Generate),
+}
+#[derive(Subcommand)]
+pub(super) enum Generate {
+    /// Print the completion script for SHELL to stdout.
+    Completions { shell: clap_complete::Shell },
+    /// Write man pages for ekmp and its subcommands into DIR.
+    Man { dir: PathBuf },
 }
 #[derive(Subcommand)]
 pub(super) enum Characters {
+    /// List authenticated characters.
     List,
     /// Authenticate a character with EVE SSO.
     Add {
@@ -64,29 +84,38 @@ pub(super) enum Characters {
         #[arg(long, conflicts_with = "no_browser")]
         paste: bool,
     },
+    /// Remove a character, its credentials, and its unshared cached killmails.
     Remove {
         #[arg(value_parser = positive_id())]
         id: u64,
+        /// Confirm without prompting.
         #[arg(long)]
         yes: bool,
     },
 }
 #[derive(Args)]
 pub(super) struct PostArgs {
+    /// The killmail to post.
     #[arg(required_unless_present = "all", conflicts_with = "all", value_parser = positive_id())]
     pub(super) id: Option<u64>,
+    /// Post every killmail eligible for bulk posting; protected victims are never included.
     #[arg(long)]
     pub(super) all: bool,
+    /// Post this killmail even though its victim is protected.
     #[arg(long, requires = "id", conflicts_with = "all")]
     pub(super) post_anyway: bool,
+    /// Confirm without prompting.
     #[arg(long)]
     pub(super) yes: bool,
 }
 #[derive(Subcommand)]
 pub(super) enum Protect {
+    /// List automatically and manually protected victims and killmails.
     List,
+    /// Protect a victim character, corporation, or one killmail.
     #[command(subcommand)]
     Add(ProtectAdd),
+    /// Stop protecting a victim character, corporation, or killmail.
     #[command(subcommand)]
     Remove(ProtectRemove),
 }
@@ -127,9 +156,9 @@ pub(super) enum ConfigKey {
 }
 #[derive(Subcommand)]
 pub(super) enum Config {
-    Get {
-        key: Option<ConfigKey>,
-    },
+    /// Print one setting, or all of them.
+    Get { key: Option<ConfigKey> },
+    /// Change a setting.
     #[command(subcommand)]
     Set(Setting),
 }
@@ -148,7 +177,9 @@ pub(super) enum Setting {
 }
 #[derive(Subcommand)]
 pub(super) enum Service {
+    /// Refresh in the foreground until stopped; never posts killmails.
     Run {
+        /// Override the refresh interval for this process, at least 5m.
         #[arg(long, value_parser = parse_interval)]
         interval: Option<Duration>,
     },

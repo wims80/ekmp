@@ -48,20 +48,29 @@ Extract `ekmp-*-x86_64-unknown-linux-gnu.tar.gz`, enter it, and run:
 ./install.sh
 ```
 
-This installs `ekmp` in `~/.local/bin`, a desktop launcher, and its icon for the current user. The desktop launcher runs `ekmp gui`; invoke `ekmp` directly for the CLI. Remove the program, launcher, and icon with `./install.sh --uninstall`; settings and caches remain in place.
+It installs for the current user, without administrator access:
+
+| Installed file | Location |
+| --- | --- |
+| `ekmp` | `~/.local/bin/` |
+| `ekmp.service` (systemd user unit; not enabled) | `~/.config/systemd/user/` |
+| Shell completions for bash, zsh, and fish | `~/.local/share/bash-completion/completions/`, `~/.local/share/zsh/site-functions/`, `~/.local/share/fish/vendor_completions.d/` |
+| Man pages (`man ekmp`, `man ekmp-post`, …) | `~/.local/share/man/man1/` |
+| Desktop launcher and icon for `ekmp gui` | `~/.local/share/applications/`, `~/.local/share/icons/` |
+
+bash and fish load the completions automatically. For zsh, add `fpath+=(~/.local/share/zsh/site-functions)` before `compinit` in `~/.zshrc`. Running `./install.sh` again upgrades in place; restart a running service afterwards with `systemctl --user restart ekmp`.
+
+`./install.sh --uninstall` stops and disables the service and removes every installed file. Settings, state, and caches remain in place.
 
 ### Refresh service
 
-The archive contains an opt-in systemd user unit, `ekmp.service`. It runs `ekmp service run` as the user who authenticated the characters, so it uses the same credentials and state. To enable it:
+`install.sh` installs an opt-in systemd user unit, `ekmp.service`. It runs `ekmp service run` as the user who authenticated the characters, so it uses the same credentials and state. Installation never enables it. To enable it:
 
 ```sh
-mkdir -p ~/.config/systemd/user
-cp ekmp.service ~/.config/systemd/user/
-systemctl --user daemon-reload
-systemctl --user enable --now ekmp.service
+systemctl --user enable --now ekmp
 ```
 
-It expects `ekmp` in `~/.local/bin`. Installation never enables the service.
+Without the installer, copy `ekmp.service` to `~/.config/systemd/user/` and run `systemctl --user daemon-reload` first; the unit expects `ekmp` in `~/.local/bin`.
 
 - Logs: `journalctl --user -u ekmp`. Each refresh logs one summary line; tokens, killmail hashes, and authorization URLs are never logged.
 - Status: `ekmp status` reports whether the service is running.

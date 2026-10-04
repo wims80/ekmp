@@ -67,6 +67,8 @@
   confirmation; `output.rs` owns `Output`, which pairs each result's JSON with
   its human-readable text; `text.rs` owns table and value formatting. The
   `--json` schema is the stable script interface; text output may change.
+  The hidden `generate` command writes shell completions (`clap_complete`)
+  and man pages (`clap_mangen`) for packaging, before any core is created.
   `service.rs` owns the foreground refresh service run by the `ekmp.service`
   systemd user unit: it only refreshes, waits until a refresh is due (checking
   at least once a minute), logs one line per cycle to stderr for journald,
@@ -126,9 +128,12 @@
   portraits and corporation logos.
 - `src/persistence/esi_cache.rs` owns the local SQLite cache for cacheable ESI
   GET responses, including expiry and conditional-request metadata.
-- `packaging/linux/` owns the release installer, desktop launcher, and the
-  opt-in systemd user-service template; `scripts/package-linux.sh` assembles
-  the Linux release archive.
+- `packaging/linux/` owns the release installer, the `ekmp.service` systemd
+  user unit, and the desktop launcher. `install.sh` installs per user under
+  `~/.local` and `~/.config/systemd/user`, never enables or starts the
+  service, and its `--uninstall` stops the service and keeps settings, state,
+  and caches. `scripts/package-linux.sh` assembles the release archive,
+  generating completions and man pages from the release binary.
 - Keep blocking HTTP and sleeps off the egui UI thread.
 - Keep submission-policy functions centralized and covered by tests.
 - When architectural boundaries, module ownership, or important paths change,

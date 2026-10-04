@@ -493,3 +493,25 @@ fn default_output_is_readable_text_and_json_is_opt_in() {
         .iter()
         .all(|mail| mail["id"].is_u64()));
 }
+
+#[test]
+fn generate_writes_completions_and_man_pages_without_touching_state() {
+    for shell in ["bash", "zsh", "fish"] {
+        let script = success(ekmp(&["generate", "completions", shell]));
+        assert!(script.contains("ekmp"), "{shell}");
+    }
+    let state = TestState::new();
+    let directory = state.path().parent().unwrap().join("man");
+    fs::create_dir_all(&directory).unwrap();
+
+    success(ekmp(&["generate", "man", directory.to_str().unwrap()]));
+
+    let pages: Vec<String> = fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(pages.contains(&"ekmp.1".to_owned()));
+    assert!(pages.contains(&"ekmp-service-run.1".to_owned()));
+    assert!(!pages.iter().any(|page| page.contains("generate")));
+    assert!(!state.path().exists());
+}

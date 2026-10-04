@@ -17,6 +17,7 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
       - run: cargo +1.97.1 fmt --check
+      - run: shellcheck packaging/linux/install.sh scripts/package-linux.sh
 
   verify:
     name: Verify (${{ matrix.profile }})

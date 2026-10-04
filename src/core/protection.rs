@@ -1,7 +1,4 @@
-use super::{
-    timing::{active_api_cooldown, merge_api_cooldowns},
-    Core, CoreError, CoreResult,
-};
+use super::{timing::active_api_cooldown, Core, CoreError, CoreResult};
 use crate::models::{ProtectedVictim, ProtectedVictimKind, Store};
 
 impl Core {
@@ -43,7 +40,7 @@ impl Core {
             )));
         }
         let resolved = self.backend.resolve_protected_victim(kind, query);
-        merge_api_cooldowns(locked.store_mut(), self.backend.take_api_cooldowns());
+        self.absorb_api_observations(locked.store_mut());
         locked.persist()?;
         let victim = resolved.map_err(|error| {
             CoreError::Operational(format!("could not resolve victim: {error}"))

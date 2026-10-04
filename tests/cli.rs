@@ -300,32 +300,72 @@ fn configuration_invalid_values_are_invocation_errors() {
     }
 }
 
+/// Sends `signal` to the service and returns its exit code and stderr.
 #[cfg(unix)]
-#[test]
-fn service_interrupt_releases_lifetime_lock_and_exits_130() {
-    let state = TestState::new();
-    let mut service = service_process(&state);
-    assert_service_is_running(service.child_mut());
+fn stop_with_signal(service: &mut ServiceProcess, signal: &str) -> (Option<i32>, String) {
     assert!(Command::new("kill")
-        .args(["-INT", &service.child_mut().id().to_string()])
+        .args([signal, &service.child_mut().id().to_string()])
         .status()
         .unwrap()
         .success());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
+    let status = loop {
         if let Some(status) = service.child_mut().try_wait().unwrap() {
-            assert_eq!(status.code(), Some(130));
-            break;
+            break status;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "service did not stop after SIGINT"
+            "service did not stop after {signal}"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    let mut diagnostics = String::new();
+    if let Some(mut stderr) = service.child_mut().stderr.take() {
+        use std::io::Read;
+        stderr.read_to_string(&mut diagnostics).unwrap();
     }
-    let status = success(run_scenario(&state, &["--json", "status"]));
-    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
-    assert_eq!(status["service_running"], false);
+    (status.code(), diagnostics)
+}
+
+#[cfg(unix)]
+#[test]
+fn service_stops_cleanly_on_sigint_and_sigterm_and_releases_its_lock() {
+    for signal in ["-INT", "-TERM"] {
+        let state = TestState::new();
+        let mut service = service_process(&state);
+        assert_service_is_running(service.child_mut());
+
+        let (code, diagnostics) = stop_with_signal(&mut service, signal);
+
+        assert_eq!(code, Some(0), "{signal}: {diagnostics}");
+        assert!(diagnostics.contains("Refresh service stopped."));
+        let status = success(run_scenario(&state, &["--json", "status"]));
+        let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status["service_running"], false);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn service_without_characters_waits_instead_of_exiting() {
+    let state = TestState::new();
+    success(run_scenario(
+        &state,
+        &["characters", "remove", "1001", "--yes"],
+    ));
+    let mut service = service_process(&state);
+    assert_service_is_running(service.child_mut());
+
+    let (code, diagnostics) = stop_with_signal(&mut service, "-TERM");
+
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        diagnostics
+            .matches("No characters are authenticated")
+            .count(),
+        1,
+        "{diagnostics}"
+    );
 }
 
 #[test]
@@ -423,4 +463,55 @@ fn persisted_cooldown_blocks_lookup_and_submission_in_new_processes() {
         serde_json::from_slice(&fs::read(state.path()).unwrap()).unwrap();
     assert!(after["zkill_pages"].as_object().unwrap().is_empty());
     assert!(after["zkill_status"]["9001"].is_null());
+}
+
+#[test]
+fn default_output_is_readable_text_and_json_is_opt_in() {
+    let state = TestState::new();
+    success(run_scenario(&state, &["refresh"]));
+
+    let list = success(run_scenario(&state, &["list"]));
+    let header = list.lines().next().unwrap();
+    assert!(header.starts_with("ID"), "{list}");
+    assert!(header.contains("STATUS") && header.contains("BULK"));
+    assert!(list.contains("9001"));
+    assert!(list.contains("protected killmails are hidden; use --show-protected"));
+    assert!(!list.contains("fixture-hash") && !list.contains('{'));
+
+    let shown = success(run_scenario(&state, &["--show-protected", "show", "9002"]));
+    assert!(shown.contains("Protected:"));
+    assert!(shown.contains("Eligible for bulk posting: no"));
+
+    let status = success(run_scenario(&state, &["status"]));
+    assert!(status.contains("Unreported killmails:"));
+
+    let json = success(run_scenario(&state, &["--json", "list"]));
+    let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+    assert!(parsed
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|mail| mail["id"].is_u64()));
+}
+
+#[test]
+fn generate_writes_completions_and_man_pages_without_touching_state() {
+    for shell in ["bash", "zsh", "fish"] {
+        let script = success(ekmp(&["generate", "completions", shell]));
+        assert!(script.contains("ekmp"), "{shell}");
+    }
+    let state = TestState::new();
+    let directory = state.path().parent().unwrap().join("man");
+    fs::create_dir_all(&directory).unwrap();
+
+    success(ekmp(&["generate", "man", directory.to_str().unwrap()]));
+
+    let pages: Vec<String> = fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(pages.contains(&"ekmp.1".to_owned()));
+    assert!(pages.contains(&"ekmp-service-run.1".to_owned()));
+    assert!(!pages.iter().any(|page| page.contains("generate")));
+    assert!(!state.path().exists());
 }

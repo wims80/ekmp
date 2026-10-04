@@ -169,7 +169,7 @@ impl Backend for SimulatorBackend {
     fn authenticate(
         &self,
         _cancelled: &AtomicBool,
-        _open_browser: bool,
+        _flow: crate::integrations::auth::AuthFlow,
         _on_authorization_url: &dyn Fn(&str),
     ) -> ApiResult<Character> {
         self.connect_characters

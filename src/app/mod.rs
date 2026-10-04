@@ -11,7 +11,6 @@ use crate::{
 use eframe::egui;
 use std::{
     collections::{HashMap, HashSet, VecDeque},
-    path::Path,
     sync::{mpsc::Receiver, Arc},
     time::{Duration, Instant},
 };
@@ -299,22 +298,18 @@ impl App {
     }
 }
 
-/// Opens the desktop interface, optionally on an offline scenario.
-pub(crate) fn run(scenario: Option<&str>, dev_state: Option<&Path>) -> Result<(), String> {
+/// Opens the desktop interface, on an offline scenario's core and name when given.
+pub(crate) fn run(simulation: Option<(Core, String)>) -> Result<(), String> {
     let inspection = std::env::var("EGUI_INSPECTION")
         .is_ok_and(|value| !value.is_empty() && value != "0" && value != "false");
-    if inspection && scenario.is_none() {
+    if inspection && simulation.is_none() {
         return Err(
             "EGUI_INSPECTION may only be enabled together with a simulation scenario".into(),
         );
     }
-    let app = match scenario {
+    let app = match simulation {
         None => App::new(),
-        Some(name) => {
-            let (core, name) =
-                crate::cli::scenario_core(name, dev_state).map_err(|error| error.to_string())?;
-            App::build(core, None, Some(name), false)
-        }
+        Some((core, name)) => App::build(core, None, Some(name), false),
     };
     let icon = eframe::icon_data::from_png_bytes(include_bytes!("../../assets/app-icon.png"))
         .map_err(|_| "could not decode application icon")?;
@@ -359,7 +354,7 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("ekmp.json");
+        let path = directory.join("state.json");
         let core = Core::at_path(Arc::new(LiveBackend::default()), path.clone());
         core.initialize(Store {
             show_protected_killmails: true,

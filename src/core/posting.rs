@@ -1,8 +1,6 @@
 use super::{
     status::prune_reported,
-    timing::{
-        active_api_cooldown, check_cancelled, merge_api_cooldowns, reserve_zkill_request, unix_time,
-    },
+    timing::{active_api_cooldown, check_cancelled, reserve_zkill_request, unix_time},
     Cancellation, Core, CoreError, CoreResult, PostBatchResult, PostMode, PostResult,
     PostResultStatus, PostSelection, PreparedPost, SessionReport,
 };
@@ -159,7 +157,7 @@ impl Core {
             }
 
             let outcome = self.backend.post(&mail);
-            merge_api_cooldowns(locked.store_mut(), self.backend.take_api_cooldowns());
+            self.absorb_api_observations(locked.store_mut());
             match outcome {
                 Ok(outcome) => {
                     locked

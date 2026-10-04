@@ -1,5 +1,5 @@
 use crate::{
-    integrations::{auth, backend::LoadKillmailsOutcome, http::CooldownLog, ApiError, ApiResult},
+    integrations::{auth, backend::LoadKillmailsOutcome, http::ApiLog, ApiError, ApiResult},
     models::{
         Character, Killmail, KillmailAttacker, KillmailDetail, KillmailItem, KillmailLocation,
         KillmailVictimDetail, ProtectedVictimKind,
@@ -26,14 +26,17 @@ use types::*;
 use universe::{matching_protected_victim, resolve_protected_victim_name_at};
 pub use universe::{refresh_character_affiliation, resolve_protected_victim};
 
-const ESI: &str = "https://esi.evetech.net/latest";
+const ESI: &str = "https://esi.evetech.net";
+/// The ESI behavior this client was written and tested against. Bump it only after checking
+/// that every route's response still matches the DTOs in `types.rs`.
+const COMPATIBILITY_DATE: &str = "2026-08-18";
 
 pub fn load_killmails(
     chars: &[Character],
     cached_killmails: &[Killmail],
     reported_ids: &HashSet<u64>,
     cancelled: &AtomicBool,
-    cooldowns: &CooldownLog,
+    cooldowns: &ApiLog,
     on_character_updated: &mut dyn FnMut(&Character) -> ApiResult<()>,
 ) -> ApiResult<LoadKillmailsOutcome> {
     load_killmails_at(
@@ -188,7 +191,7 @@ mod tests {
         chars: &[Character],
         cached_killmails: &[Killmail],
         reported_ids: &HashSet<u64>,
-        cooldowns: &CooldownLog,
+        cooldowns: &ApiLog,
     ) -> ApiResult<LoadKillmailsOutcome> {
         load_killmails_at(
             &Esi::new(&server.base_url(), None, cooldowns).unwrap(),
@@ -252,7 +255,7 @@ mod tests {
         });
         let path = temporary_cache_path();
         {
-            let cooldowns = CooldownLog::default();
+            let cooldowns = ApiLog::default();
             let base_url = server.base_url();
             let esi = Esi::new(
                 &base_url,
@@ -283,7 +286,7 @@ mod tests {
         let path = temporary_cache_path();
         {
             let cache = EsiCache::open_at(&path).unwrap();
-            let url = format!("{}/characters/2/", server.base_url());
+            let url = client::cache_key(&format!("{}/characters/2/", server.base_url()));
             cache
                 .store(
                     &url,
@@ -294,7 +297,7 @@ mod tests {
                 )
                 .unwrap();
 
-            let cooldowns = CooldownLog::default();
+            let cooldowns = ApiLog::default();
             let base_url = server.base_url();
             let esi = Esi::new(&base_url, Some(cache), &cooldowns).unwrap();
             let response: CharacterInfo =
@@ -311,7 +314,7 @@ mod tests {
     #[test]
     fn loads_killmails_through_the_configured_http_endpoint() {
         let server = MockServer::start();
-        let cooldowns = CooldownLog::default();
+        let cooldowns = ApiLog::default();
         let recent = server.mock(|when, then| {
             when.method(GET)
                 .path("/characters/1/killmails/recent/")
@@ -392,7 +395,7 @@ mod tests {
     #[test]
     fn rate_budget_during_location_lookup_stops_the_refresh() {
         let server = MockServer::start();
-        let cooldowns = CooldownLog::default();
+        let cooldowns = ApiLog::default();
         server.mock(|when, then| {
             when.method(GET).path("/characters/1/killmails/recent/");
             then.status(200)
@@ -438,13 +441,13 @@ mod tests {
             matches!(&result, Err(ApiError::RateLimited(error)) if error.contains("rate budget"))
         );
         names.assert_calls(0);
-        cooldowns.take();
+        cooldowns.take_cooldowns();
     }
 
     #[test]
     fn matching_cached_detail_is_reused_and_source_membership_is_refreshed() {
         let server = MockServer::start();
-        let cooldowns = CooldownLog::default();
+        let cooldowns = ApiLog::default();
         server.mock(|when, then| {
             when.method(GET).path("/characters/1/killmails/recent/");
             then.status(200)
@@ -501,7 +504,7 @@ mod tests {
     #[test]
     fn positively_reported_ids_are_filtered_before_detail_and_price_requests() {
         let server = MockServer::start();
-        let cooldowns = CooldownLog::default();
+        let cooldowns = ApiLog::default();
         server.mock(|when, then| {
             when.method(GET).path("/characters/1/killmails/recent/");
             then.status(200)
@@ -525,7 +528,7 @@ mod tests {
     #[test]
     fn market_rate_limit_stops_before_killmail_detail_requests() {
         let server = MockServer::start();
-        let cooldowns = CooldownLog::default();
+        let cooldowns = ApiLog::default();
         server.mock(|when, then| {
             when.method(GET).path("/characters/1/killmails/recent/");
             then.status(200)
@@ -558,7 +561,7 @@ mod tests {
         assert!(error.contains("rate limited"));
         assert!(!error.contains("sentinel"));
         detail.assert_calls(0);
-        let cooldowns = cooldowns.take();
+        let cooldowns = cooldowns.take_cooldowns();
         assert_eq!(cooldowns.len(), 1);
         assert_eq!(cooldowns[0].scope.as_deref(), Some("market"));
     }
@@ -566,7 +569,7 @@ mod tests {
     #[test]
     fn exhausted_esi_error_budget_stops_the_next_character_request() {
         let server = MockServer::start();
-        let cooldowns = CooldownLog::default();
+        let cooldowns = ApiLog::default();
         server.mock(|when, then| {
             when.method(GET).path("/characters/1/killmails/recent/");
             then.status(200)
@@ -594,7 +597,7 @@ mod tests {
             matches!(result, Err(ApiError::RateLimited(error)) if error.contains("rate budget"))
         );
         second.assert_calls(0);
-        let cooldowns = cooldowns.take();
+        let cooldowns = cooldowns.take_cooldowns();
         assert_eq!(cooldowns.len(), 1);
         assert_eq!(
             cooldowns[0].reason.as_deref(),
@@ -605,7 +608,7 @@ mod tests {
     #[test]
     fn low_group_budget_defers_detail_requests() {
         let server = MockServer::start();
-        let cooldowns = CooldownLog::default();
+        let cooldowns = ApiLog::default();
         server.mock(|when, then| {
             when.method(GET).path("/characters/1/killmails/recent/");
             then.status(200)
@@ -638,7 +641,7 @@ mod tests {
             matches!(result, Err(ApiError::RateLimited(error)) if error.contains("rate budget"))
         );
         detail.assert_calls(0);
-        let cooldowns = cooldowns.take();
+        let cooldowns = cooldowns.take_cooldowns();
         assert_eq!(cooldowns[0].scope.as_deref(), Some("market"));
         assert_eq!(cooldowns[0].reason.as_deref(), Some("low rate budget"));
     }
@@ -676,7 +679,7 @@ mod tests {
                 .body(r#"{"characters":[{"id":42,"name":"Fixture Pilot"}]}"#);
         });
 
-        let cooldowns = CooldownLog::default();
+        let cooldowns = ApiLog::default();
         let base_url = server.base_url();
         let result = resolve_protected_victim_name_at(
             &Esi::new(&base_url, None, &cooldowns).unwrap(),

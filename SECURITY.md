@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please use GitHub's private vulnerability reporting feature for security
-issues. Do not open a public issue containing refresh tokens, `ekmp.json`,
+issues. Do not open a public issue containing refresh tokens, `credentials.json`, `state.json`,
 authorization codes, EVE character data that should remain private, or
 killmail hashes.
 

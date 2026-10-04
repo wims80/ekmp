@@ -99,7 +99,7 @@ impl App {
                 ui,
                 WARNING,
                 "CREDENTIAL STORAGE WARNING",
-                "A refresh token is stored in ekmp.json because the system credential store was unavailable.",
+                "A refresh token is stored in credentials.json because the system credential store was unavailable.",
             );
         }
         if let Some(error) = &self.core_status.last_error {

@@ -17,33 +17,36 @@ jobs:
       - uses: actions/checkout@v7
       - run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
       - run: cargo +1.97.1 fmt --check
+      - run: shellcheck packaging/linux/install.sh scripts/package-linux.sh
 
   verify:
-    name: Verify (${{ matrix.os }}, ${{ matrix.profile }})
-    runs-on: ${{ matrix.os }}
+    name: Verify (${{ matrix.profile }})
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-22.04, windows-2022]
-        profile: [gui, cli]
+        profile: [default, gui]
     steps:
       - uses: actions/checkout@v7
       - run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
+      - name: Check default build
+        if: matrix.profile == 'default'
+        run: cargo +1.97.1 check --locked
+      - name: Lint default build
+        if: matrix.profile == 'default'
+        run: cargo +1.97.1 clippy --locked --all-targets -- -D warnings
+      - name: Test default build
+        if: matrix.profile == 'default'
+        run: cargo +1.97.1 test --locked
+      - name: Test default build with the simulator
+        if: matrix.profile == 'default'
+        run: cargo +1.97.1 test --locked --features dev-tools
       - name: Check GUI build
         if: matrix.profile == 'gui'
-        run: cargo +1.97.1 check --locked
-      - name: Lint GUI build
+        run: cargo +1.97.1 check --locked --features gui
+      - name: Lint all features
         if: matrix.profile == 'gui'
         run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
-      - name: Test GUI build
+      - name: Test all features
         if: matrix.profile == 'gui'
         run: cargo +1.97.1 test --locked --all-features
-      - name: Check CLI-only build
-        if: matrix.profile == 'cli'
-        run: cargo +1.97.1 check --locked --no-default-features
-      - name: Lint CLI-only build
-        if: matrix.profile == 'cli'
-        run: cargo +1.97.1 clippy --locked --no-default-features --all-targets -- -D warnings
-      - name: Test CLI-only simulator
-        if: matrix.profile == 'cli'
-        run: cargo +1.97.1 test --locked --no-default-features --features dev-tools

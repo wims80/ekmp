@@ -5,8 +5,9 @@
   package, executable, application ID, storage paths, and platform assets use
   that identifier.
 - Repository creation and GitHub identity work remain tracked in `TODO.md`.
-- This is a Rust application with a CLI-first default interface and an optional
-  `eframe`/`egui` GUI feature.
+- This is a Rust application for Linux. The default build is the CLI and its
+  refresh service; the `eframe`/`egui` GUI is an opt-in `gui` feature that
+  release builds enable.
 - EVE data comes from ESI, authentication uses EVE SSO with PKCE, and killmails
   are submitted to zKillboard.
 - The EVE client ID is a public application identifier. A client secret must
@@ -33,7 +34,8 @@
 - Unknown or expired-negative zKillboard statuses are refreshed for cached
   killmails at startup.
 - Use cached status information and request spacing to avoid unnecessarily
-  hammering ESI or zKillboard.
+  hammering ESI or zKillboard. Refresh intervals are at least
+  `MIN_REFRESH_INTERVAL_SECS` (5 minutes) wherever they enter.
 
 ## Architecture
 
@@ -57,10 +59,22 @@
   cancellation, waits, API cooldowns, and durable zKillboard request spacing.
   Integration errors convert into `CoreError` at this boundary. Tests live alongside their owning modules, with shared backend and
   store fixtures in test-only `test_support.rs`.
-- `src/cli.rs` owns Clap command parsing and value validation, terminal
-  confirmation, JSON rendering, cancellation handling, offline-scenario core
-  construction shared with the GUI, and the foreground refresh service.
-- `src/clock.rs` owns system time and HTTP-date conversion.
+- `src/cli/` owns the command-line interface. `mod.rs` owns `run`, command
+  dispatch, cancellation handling, exit codes, and offline-scenario core
+  construction shared with the GUI. `args.rs` owns Clap definitions and value
+  validation; `commands.rs` owns the character, posting, protection, and
+  configuration commands; `prompt.rs` owns interruptible terminal input and
+  confirmation; `output.rs` owns `Output`, which pairs each result's JSON with
+  its human-readable text; `text.rs` owns table and value formatting. The
+  `--json` schema is the stable script interface; text output may change.
+  The hidden `generate` command writes shell completions (`clap_complete`)
+  and man pages (`clap_mangen`) for packaging, before any core is created.
+  `service.rs` owns the foreground refresh service run by the `ekmp.service`
+  systemd user unit: it only refreshes, waits until a refresh is due (checking
+  at least once a minute), logs one line per cycle to stderr for journald,
+  waits rather than exits without characters, and exits 0 on SIGINT or
+  SIGTERM.
+- `src/clock.rs` owns system time, HTTP-date conversion, and UTC formatting.
 - `src/app/` owns the optional GUI shell and its launcher. It renders core
   snapshots, GUI-only textures and expansion state, and polls shared state
   without writing a stale snapshot back to storage.
@@ -76,41 +90,52 @@
 - `src/app/worker.rs` owns the GUI image-loading worker.
 - `src/killmail.rs` owns killmail visibility, reporting status, protection,
   and submission policy.
-- `src/integrations/` owns external API integrations: EVE SSO authentication,
+- `src/integrations/` owns external API integrations: EVE SSO authentication
+  (`auth.rs`; its `AuthFlow` receives the callback on the loopback listener or
+  from a pasted redirect URL, validating the callback URL and OAuth state),
   ESI data access, EVE image-service portraits and logos, and zKillboard lookup
   and submission. Its single backend interface separates the live adapters from
   the feature-gated offline simulator used by workers and UI tests. `mod.rs`
   owns the typed `ApiError`; only its `Other` kind is recoverable, and callers
   must classify errors by kind, never by message text. `http.rs` owns the
   shared HTTP clients, user agent, transport errors, `Retry-After` parsing, and
-  the per-backend `CooldownLog` through which adapters report API cooldowns.
+  the per-backend `ApiLog` through which adapters report API cooldowns and
+  once-per-route deprecation warnings; core drains it with
+  `absorb_api_observations`.
 - `src/integrations/esi/` owns the ESI adapter: `client.rs` owns the `Esi`
-  client with cached GETs, POSTs, and rate-limit observation, `killmails.rs`
+  client with cached GETs, POSTs, rate-limit and deprecation observation, and
+  the pinned `X-Compatibility-Date` (`COMPATIBILITY_DATE` in `mod.rs`; bump it
+  only after checking every route against `types.rs`), `killmails.rs`
   assembles killmails, `universe.rs` resolves EVE identities and protected
   victims, `market.rs` estimates values, and `types.rs` contains private
   response DTOs.
 - `dev/scenarios/` owns synthetic JSON scenarios for offline development. The
-  `dev-tools` feature enables scenario launch in CLI-only and GUI builds;
-  eframe inspection is enabled only with the `gui` feature. Live runs must
-  never expose the inspection interface.
+  `dev-tools` feature is debug-only: `main.rs` refuses to compile it without
+  `debug_assertions`, and the `--scenario`/`--dev-state` flags and
+  `cli::simulation` exist only with it. It enables scenario launch in CLI-only
+  and GUI builds; eframe inspection also needs the `gui` feature. Live runs
+  must never expose the inspection interface.
 - `src/models.rs` contains persisted and domain models. Each cached
   killmail's zKillboard evidence is a single `ZkillStatus`.
-- `src/persistence/mod.rs` owns the shared cache directory and private
-  file-permission helpers.
-- `src/persistence/secrets.rs` owns cross-platform refresh-token storage:
-  Secret Service on Linux, Keychain on macOS, and Credential Manager on
-  Windows. It also supports the common JSON fallback when a credential store
-  fails; keep its work off the UI thread.
-- `src/persistence/storage.rs` owns local configuration loading and atomic
-  saving, including restrictive Unix file permissions and fail-safe handling
-  of unreadable state.
+- `src/persistence/mod.rs` owns private file-permission helpers;
+  `paths.rs` owns the XDG config, state, and cache directories.
+- `src/persistence/secrets.rs` owns refresh-token storage in the system
+  credential store (Secret Service on Linux). When it fails, tokens fall back
+  to `credentials.json`; keep its work off the UI thread.
+- `src/persistence/storage.rs` owns `StorePaths`, splitting `Store` into its
+  config, state, and credentials files, atomic saving with restrictive Unix
+  file permissions, fail-safe handling of unreadable files, and the operation
+  and service locks beside the state file.
 - `src/persistence/image_cache.rs` owns the local cache for public EVE character
   portraits and corporation logos.
 - `src/persistence/esi_cache.rs` owns the local SQLite cache for cacheable ESI
   GET responses, including expiry and conditional-request metadata.
-- `packaging/linux/` and `packaging/windows/` own release launchers and the
-  opt-in Linux systemd user-service template; `scripts/package-linux.sh` and
-  `scripts/package-windows.ps1` assemble the platform release archives.
+- `packaging/linux/` owns the release installer, the `ekmp.service` systemd
+  user unit, and the desktop launcher. `install.sh` installs per user under
+  `~/.local` and `~/.config/systemd/user`, never enables or starts the
+  service, and its `--uninstall` stops the service and keeps settings, state,
+  and caches. `scripts/package-linux.sh` assembles the release archive,
+  generating completions and man pages from the release binary.
 - Keep blocking HTTP and sleeps off the egui UI thread.
 - Keep submission-policy functions centralized and covered by tests.
 - When architectural boundaries, module ownership, or important paths change,
@@ -119,9 +144,15 @@
 
 ## Persistence
 
-- Local state is currently stored in `~/.config/ekmp/ekmp.json`.
-- It can contain OAuth refresh-token fallbacks when a system credential store
-  is unavailable or fails, and must then be treated as sensitive.
+- `Store` is persisted as three files by `persistence/storage.rs`:
+  preferences in `$XDG_CONFIG_HOME/ekmp/config.toml`, everything else in
+  `$XDG_STATE_HOME/ekmp/state.json`, and OAuth refresh-token fallbacks in
+  `$XDG_STATE_HOME/ekmp/credentials.json`. `Store`'s serde form is the state
+  file, so preference fields and refresh tokens are `#[serde(skip)]`.
+- `config.toml` is hand-editable: unknown keys are rejected, and it is
+  rewritten only when a setting's value changes, preserving user comments.
+- `credentials.json` exists only while the system credential store has failed
+  for some character, and must be treated as sensitive.
 - Persistence compatibility is not currently required because the application
   is under heavy development and has one user.
 - Do not add compatibility aliases or migrations unless explicitly requested.

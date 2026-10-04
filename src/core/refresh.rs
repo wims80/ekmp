@@ -1,12 +1,12 @@
 use super::{
     status::prune_reported,
     store::LockedStore,
-    timing::{check_cancelled, merge_api_cooldowns, unix_time},
+    timing::{check_cancelled, unix_time},
     Cancellation, Core, CoreError, CoreResult, RefreshResult,
 };
 use crate::{
     integrations::{ApiError, ApiResult},
-    models::{Character, Store, ZkillStatus},
+    models::{Character, Store, ZkillStatus, MIN_REFRESH_INTERVAL_SECS},
 };
 use std::{collections::HashSet, time::Duration};
 
@@ -53,10 +53,10 @@ impl Core {
 
     pub(crate) fn set_refresh_interval(&self, interval: Duration) -> CoreResult<()> {
         let seconds = interval.as_secs();
-        if seconds == 0 {
-            return Err(CoreError::Operational(
-                "refresh interval must be greater than zero".into(),
-            ));
+        if seconds < MIN_REFRESH_INTERVAL_SECS {
+            return Err(CoreError::Operational(format!(
+                "refresh interval must be at least {MIN_REFRESH_INTERVAL_SECS} seconds"
+            )));
         }
         self.simple_mutation(|store| store.refresh_interval_secs = seconds)
     }
@@ -87,7 +87,7 @@ impl Core {
         }
 
         let operation = self.perform_refresh(&mut locked, cancelled);
-        merge_api_cooldowns(locked.store_mut(), self.backend.take_api_cooldowns());
+        self.absorb_api_observations(locked.store_mut());
         let completed = unix_time();
         let active_cooldown = locked
             .store()
@@ -242,4 +242,27 @@ fn refresh_backoff(failures: u32, interval_secs: u64) -> u64 {
     60_u64
         .saturating_mul(1_u64 << exponent)
         .min(interval_secs.max(60))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::test_support::TestBackend;
+    use std::sync::Arc;
+
+    #[test]
+    fn refresh_interval_below_the_minimum_is_rejected() {
+        let core = Core::in_memory(Arc::new(TestBackend::new()), Store::default());
+
+        assert!(core
+            .set_refresh_interval(Duration::from_secs(MIN_REFRESH_INTERVAL_SECS - 1))
+            .is_err());
+        core.set_refresh_interval(Duration::from_secs(MIN_REFRESH_INTERVAL_SECS))
+            .unwrap();
+
+        assert_eq!(
+            core.snapshot().unwrap().store.refresh_interval_secs,
+            MIN_REFRESH_INTERVAL_SECS
+        );
+    }
 }

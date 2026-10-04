@@ -24,9 +24,20 @@ const SCOPE: &str = "esi-killmails.read_killmails.v1";
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 const CALLBACK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
+/// How the authorization code gets back to ekmp after the user signs in.
+#[derive(Clone, Copy)]
+pub(crate) enum AuthFlow<'a> {
+    /// Wait for the browser's redirect on the local callback, optionally opening the
+    /// browser. Needs the browser on this machine or an SSH tunnel to the callback port.
+    Loopback { open_browser: bool },
+    /// Read the redirect URL that the user copies from the browser on any machine. The
+    /// reader returns `None` when cancelled.
+    Paste(&'a dyn Fn() -> Option<String>),
+}
+
 pub fn authenticate(
     cancelled: &AtomicBool,
-    open_browser: bool,
+    flow: AuthFlow,
     on_authorization_url: &dyn Fn(&str),
 ) -> ApiResult<Character> {
     let mut random = OsRng;
@@ -48,16 +59,30 @@ pub fn authenticate(
         .append_pair("state", &state)
         .append_pair("code_challenge", &challenge)
         .append_pair("code_challenge_method", "S256");
-    let listener =
-        TcpListener::bind("127.0.0.1:17842").map_err(|e| format!("Callback unavailable: {e}"))?;
-    on_authorization_url(url.as_str());
-    if open_browser {
-        open::that(url.as_str()).map_err(|_| {
-            "Could not open the browser; use --no-browser to open the authorization URL manually"
-                .to_string()
-        })?;
-    }
-    let code = receive_callback(listener, &state, cancelled)?;
+    let code = match flow {
+        AuthFlow::Loopback { open_browser } => {
+            let listener = TcpListener::bind("127.0.0.1:17842")
+                .map_err(|e| format!("Callback unavailable: {e}"))?;
+            on_authorization_url(url.as_str());
+            if open_browser {
+                open::that(url.as_str()).map_err(|_| {
+                    "Could not open the browser; use --no-browser to open the authorization URL manually"
+                        .to_string()
+                })?;
+            }
+            receive_callback(listener, &state, cancelled)?
+        }
+        AuthFlow::Paste(read_pasted_url) => {
+            on_authorization_url(url.as_str());
+            let pasted = read_pasted_url().ok_or("Character connection cancelled")?;
+            let callback = Url::parse(pasted.trim())
+                .map_err(|_| "The pasted text is not a URL; paste the full address bar")?;
+            if !is_callback(&callback) {
+                return Err(format!("The pasted URL must start with {CALLBACK}").into());
+            }
+            callback_code(&callback, &state)?
+        }
+    };
     if cancelled.load(Ordering::Relaxed) {
         return Err("Character connection cancelled".into());
     }
@@ -142,21 +167,35 @@ fn receive_callback_until(
         .nth(1)
         .ok_or("Invalid callback")?;
     let callback = Url::parse(&format!("http://localhost{target}")).map_err(|e| e.to_string())?;
-    if callback
-        .query_pairs()
-        .find(|(k, _)| k == "state")
-        .map(|(_, v)| v != expected_state)
-        .unwrap_or(true)
-    {
-        return Err("OAuth state validation failed".into());
-    }
-    let code = callback
-        .query_pairs()
-        .find(|(k, _)| k == "code")
-        .map(|(_, v)| v.into_owned())
-        .ok_or("Authorization failed")?;
+    let code = callback_code(&callback, expected_state)?;
     let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nAuthorization complete. You can close this window.");
     Ok(code)
+}
+
+/// Whether `url` is the registered callback, apart from its query.
+fn is_callback(url: &Url) -> bool {
+    let expected = Url::parse(CALLBACK).expect("CALLBACK is a valid URL");
+    url.scheme() == expected.scheme()
+        && url.host() == expected.host()
+        && url.port_or_known_default() == expected.port_or_known_default()
+        && url.path() == expected.path()
+}
+
+/// Validates the callback's OAuth `state` and returns its authorization code.
+fn callback_code(callback: &Url, expected_state: &str) -> Result<String, String> {
+    let parameter = |name: &str| {
+        callback
+            .query_pairs()
+            .find(|(key, _)| key == name)
+            .map(|(_, value)| value.into_owned())
+    };
+    if parameter("state").as_deref() != Some(expected_state) {
+        return Err("OAuth state validation failed; start the connection again".into());
+    }
+    if let Some(error) = parameter("error") {
+        return Err(format!("EVE SSO refused the authorization: {error}"));
+    }
+    parameter("code").ok_or_else(|| "Authorization failed: the callback has no code".into())
 }
 
 fn check_callback_wait(cancelled: &AtomicBool, deadline: Instant) -> Result<(), String> {
@@ -216,6 +255,49 @@ struct Verify {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn callback(query: &str) -> Url {
+        Url::parse(&format!("{CALLBACK}?{query}")).unwrap()
+    }
+
+    #[test]
+    fn callback_code_requires_the_expected_state() {
+        assert_eq!(
+            callback_code(&callback("code=abc&state=expected"), "expected"),
+            Ok("abc".into())
+        );
+        for query in ["code=abc&state=other", "code=abc"] {
+            assert!(callback_code(&callback(query), "expected")
+                .unwrap_err()
+                .contains("state validation failed"));
+        }
+    }
+
+    #[test]
+    fn callback_without_code_or_with_an_sso_error_is_rejected() {
+        assert!(callback_code(&callback("state=expected"), "expected")
+            .unwrap_err()
+            .contains("no code"));
+        assert!(
+            callback_code(&callback("error=access_denied&state=expected"), "expected")
+                .unwrap_err()
+                .contains("access_denied")
+        );
+    }
+
+    #[test]
+    fn only_the_registered_callback_is_accepted() {
+        assert!(is_callback(&callback("code=abc&state=s")));
+        for other in [
+            "https://127.0.0.1:17842/callback",
+            "http://localhost:17842/callback",
+            "http://127.0.0.1:17843/callback",
+            "http://127.0.0.1:17842/other",
+            "http://attacker.example/callback",
+        ] {
+            assert!(!is_callback(&Url::parse(other).unwrap()), "{other}");
+        }
+    }
 
     #[test]
     fn callback_wait_can_be_cancelled() {

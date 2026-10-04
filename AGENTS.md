@@ -96,15 +96,15 @@
   never expose the inspection interface.
 - `src/models.rs` contains persisted and domain models. Each cached
   killmail's zKillboard evidence is a single `ZkillStatus`.
-- `src/persistence/mod.rs` owns the shared cache directory and private
-  file-permission helpers.
-- `src/persistence/secrets.rs` owns cross-platform refresh-token storage:
-  Secret Service on Linux, Keychain on macOS, and Credential Manager on
-  Windows. It also supports the common JSON fallback when a credential store
-  fails; keep its work off the UI thread.
-- `src/persistence/storage.rs` owns local configuration loading and atomic
-  saving, including restrictive Unix file permissions and fail-safe handling
-  of unreadable state.
+- `src/persistence/mod.rs` owns private file-permission helpers;
+  `paths.rs` owns the XDG config, state, and cache directories.
+- `src/persistence/secrets.rs` owns refresh-token storage in the system
+  credential store (Secret Service on Linux). When it fails, tokens fall back
+  to `credentials.json`; keep its work off the UI thread.
+- `src/persistence/storage.rs` owns `StorePaths`, splitting `Store` into its
+  config, state, and credentials files, atomic saving with restrictive Unix
+  file permissions, fail-safe handling of unreadable files, and the operation
+  and service locks beside the state file.
 - `src/persistence/image_cache.rs` owns the local cache for public EVE character
   portraits and corporation logos.
 - `src/persistence/esi_cache.rs` owns the local SQLite cache for cacheable ESI
@@ -120,9 +120,15 @@
 
 ## Persistence
 
-- Local state is currently stored in `~/.config/ekmp/ekmp.json`.
-- It can contain OAuth refresh-token fallbacks when a system credential store
-  is unavailable or fails, and must then be treated as sensitive.
+- `Store` is persisted as three files by `persistence/storage.rs`:
+  preferences in `$XDG_CONFIG_HOME/ekmp/config.toml`, everything else in
+  `$XDG_STATE_HOME/ekmp/state.json`, and OAuth refresh-token fallbacks in
+  `$XDG_STATE_HOME/ekmp/credentials.json`. `Store`'s serde form is the state
+  file, so preference fields and refresh tokens are `#[serde(skip)]`.
+- `config.toml` is hand-editable: unknown keys are rejected, and it is
+  rewritten only when a setting's value changes, preserving user comments.
+- `credentials.json` exists only while the system credential store has failed
+  for some character, and must be treated as sensitive.
 - Persistence compatibility is not currently required because the application
   is under heavy development and has one user.
 - Do not add compatibility aliases or migrations unless explicitly requested.

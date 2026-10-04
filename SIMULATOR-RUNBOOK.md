@@ -29,6 +29,9 @@ cargo run --features dev-tools -- \
   --scenario mixed --dev-state target/ekmp-dev-state.json list
 ```
 
+The state file's preferences and any fallback credentials are kept beside it, as
+`ekmp-dev-state.config.toml` and `ekmp-dev-state.credentials.json`.
+
 Global development options precede the command: `--scenario NAME` and
 `--dev-state PATH` are followed by `gui`, `list`, `refresh`, `post`, or another
 CLI command. The simulator supports the same CLI workflow as the live program.

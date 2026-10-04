@@ -359,7 +359,7 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("ekmp.json");
+        let path = directory.join("state.json");
         let core = Core::at_path(Arc::new(LiveBackend::default()), path.clone());
         core.initialize(Store {
             show_protected_killmails: true,

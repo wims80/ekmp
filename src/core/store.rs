@@ -6,21 +6,18 @@ use crate::{
     integrations::backend::Backend,
     killmail::{report_state, ReportState},
     models::{Store, ZkillStatus},
-    persistence::storage::{self, FileLock, LockError},
+    persistence::storage::{self, FileLock, LockError, StorePaths},
 };
 #[cfg(any(feature = "gui", feature = "dev-tools", test))]
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     MutexGuard,
 };
-use std::{
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 #[derive(Clone)]
 pub(super) enum Persistence {
-    File(PathBuf),
+    File(StorePaths),
     #[cfg(any(feature = "gui", feature = "dev-tools", test))]
     Memory(Arc<MemoryStore>),
 }
@@ -63,7 +60,7 @@ pub(super) struct LockedStore<'a> {
 enum PersistTarget<'a> {
     File {
         _lock: FileLock,
-        path: &'a Path,
+        paths: &'a StorePaths,
     },
     #[cfg(any(feature = "gui", feature = "dev-tools", test))]
     Memory {
@@ -84,7 +81,7 @@ impl LockedStore<'_> {
 
     pub(super) fn persist(&mut self) -> CoreResult<()> {
         match &mut self.target {
-            PersistTarget::File { path, .. } => save(path, &self.store),
+            PersistTarget::File { paths, .. } => save(paths, &self.store),
             #[cfg(any(feature = "gui", feature = "dev-tools", test))]
             PersistTarget::Memory {
                 shared,
@@ -106,25 +103,20 @@ impl LockedStore<'_> {
     }
 }
 
-fn save(path: &Path, store: &Store) -> CoreResult<()> {
-    let data = serde_json::to_vec_pretty(store)
-        .map_err(|error| CoreError::Persistence(error.to_string()))?;
-    storage::persist_to_path(path, &data).map_err(|error| {
-        CoreError::Persistence(format!(
-            "could not atomically write {}: {error}",
-            path.display()
-        ))
-    })
+fn save(paths: &StorePaths, store: &Store) -> CoreResult<()> {
+    storage::save(paths, store).map_err(CoreError::Persistence)
 }
 
 impl Core {
     pub(crate) fn live(backend: Arc<dyn Backend>) -> CoreResult<Self> {
-        let path = storage::store_path().map_err(CoreError::Persistence)?;
-        Ok(Self::at_path(backend, path))
+        let paths = StorePaths::live().map_err(CoreError::Persistence)?;
+        Ok(Self::with_persistence(backend, Persistence::File(paths)))
     }
 
-    pub(crate) fn at_path(backend: Arc<dyn Backend>, path: PathBuf) -> Self {
-        Self::with_persistence(backend, Persistence::File(path))
+    #[cfg(any(test, feature = "dev-tools"))]
+    /// A core whose files are kept beside the state file at `path`.
+    pub(crate) fn at_path(backend: Arc<dyn Backend>, path: std::path::PathBuf) -> Self {
+        Self::with_persistence(backend, Persistence::File(StorePaths::beside(path)))
     }
 
     #[cfg(any(feature = "gui", feature = "dev-tools", test))]
@@ -167,21 +159,22 @@ impl Core {
 
     #[cfg(any(test, feature = "dev-tools"))]
     pub(crate) fn initialize(&self, initial: Store) -> CoreResult<()> {
-        let Persistence::File(path) = &self.persistence else {
+        let Persistence::File(paths) = &self.persistence else {
             return Ok(());
         };
-        let _lock = storage::try_operation_lock_for(path).map_err(core_lock_error)?;
-        if storage::store_exists_or_recoverable(path) {
+        let _lock = storage::try_operation_lock_for(&paths.state).map_err(core_lock_error)?;
+        if storage::state_exists(paths) {
             return Ok(());
         }
-        save(path, &initial)
+        save(paths, &initial)
     }
 
     pub(crate) fn snapshot(&self) -> CoreResult<Snapshot> {
         let store = match &self.persistence {
-            Persistence::File(path) => {
-                let _lock = storage::try_snapshot_lock_for(path).map_err(core_lock_error)?;
-                storage::load_from_path(path).map_err(CoreError::Persistence)?
+            Persistence::File(paths) => {
+                let _lock =
+                    storage::try_snapshot_lock_for(&paths.state).map_err(core_lock_error)?;
+                storage::load(paths).map_err(CoreError::Persistence)?
             }
             #[cfg(any(feature = "gui", feature = "dev-tools", test))]
             Persistence::Memory(memory) => memory
@@ -196,8 +189,8 @@ impl Core {
 
     pub(crate) fn try_service_guard(&self) -> CoreResult<ServiceGuard> {
         match &self.persistence {
-            Persistence::File(path) => Ok(ServiceGuard::File {
-                _lock: storage::try_service_lock_for(path).map_err(core_lock_error)?,
+            Persistence::File(paths) => Ok(ServiceGuard::File {
+                _lock: storage::try_service_lock_for(&paths.state).map_err(core_lock_error)?,
             }),
             #[cfg(any(feature = "gui", feature = "dev-tools", test))]
             Persistence::Memory(memory) => {
@@ -220,11 +213,12 @@ impl Core {
 
     pub(super) fn begin_operation(&self) -> CoreResult<LockedStore<'_>> {
         match &self.persistence {
-            Persistence::File(path) => {
-                let lock = storage::try_operation_lock_for(path).map_err(core_lock_error)?;
+            Persistence::File(paths) => {
+                let lock =
+                    storage::try_operation_lock_for(&paths.state).map_err(core_lock_error)?;
                 Ok(LockedStore {
-                    store: storage::load_from_path(path).map_err(CoreError::Persistence)?,
-                    target: PersistTarget::File { _lock: lock, path },
+                    store: storage::load(paths).map_err(CoreError::Persistence)?,
+                    target: PersistTarget::File { _lock: lock, paths },
                 })
             }
             #[cfg(any(feature = "gui", feature = "dev-tools", test))]
@@ -259,7 +253,7 @@ impl Core {
             }
         }
         let service_running = match &self.persistence {
-            Persistence::File(path) => match storage::try_service_lock_for(path) {
+            Persistence::File(paths) => match storage::try_service_lock_for(&paths.state) {
                 Ok(lock) => {
                     drop(lock);
                     false
@@ -312,7 +306,7 @@ mod tests {
             std::process::id()
         ));
         std::fs::create_dir_all(&directory).unwrap();
-        let path = directory.join("ekmp.json");
+        let path = directory.join("state.json");
         let core = Core::at_path(Arc::new(TestBackend::new()), path);
         core.initialize(Store {
             show_protected_killmails: true,

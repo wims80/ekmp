@@ -70,7 +70,7 @@ runnable application downloads.
 
 - On Linux, install the exact downloaded archive in a clean user account and
   confirm the launcher, GNOME/KDE taskbar icon, direct execution, reinstall,
-  and uninstall behavior. Confirm uninstall preserves `~/.config/ekmp`.
+  and uninstall behavior. Confirm uninstall preserves `~/.config/ekmp` and `~/.local/state/ekmp`.
 - Authenticate, load cached and fresh killmails, confirm
   protected-victim visibility, status refresh, and character removal.
 - Confirm that posting is always explicitly initiated, bulk posting excludes

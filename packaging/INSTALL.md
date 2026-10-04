@@ -6,4 +6,4 @@ Extract the complete archive and run `./install.sh`. It installs the program for
 
 `ekmp-refresh.service` is an opt-in systemd user-service template. If periodic refreshes are wanted, copy it to `~/.config/systemd/user/`, then run `systemctl --user daemon-reload` and `systemctl --user enable --now ekmp-refresh.service`. It refreshes cached data only and never posts killmails. Installation does not enable the service.
 
-The program never needs an EVE client secret. Keep `ekmp.json`, refresh tokens, and authorization URLs private.
+The program never needs an EVE client secret. Keep `~/.local/state/ekmp/`, refresh tokens, and authorization URLs private.

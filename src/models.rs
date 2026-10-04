@@ -3,16 +3,22 @@ use std::collections::HashMap;
 
 pub const DEFAULT_REFRESH_INTERVAL_SECS: u64 = 15 * 60;
 
+/// All persisted application data.
+///
+/// Its serialized form is the state file. Preferences and fallback refresh tokens are
+/// skipped here and stored in their own files by `persistence::storage`.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Store {
     pub characters: Vec<Character>,
     pub zkill_status: HashMap<u64, ZkillStatus>,
+    #[serde(skip)]
     pub show_protected_killmails: bool,
     pub cached_killmails: Vec<Killmail>,
     pub manually_protected_characters: Vec<ProtectedVictim>,
     pub manually_protected_corporations: Vec<ProtectedVictim>,
     pub manually_protected_killmail_ids: Vec<u64>,
+    #[serde(skip)]
     pub refresh_interval_secs: u64,
     pub refresh_schedule: RefreshSchedule,
     pub api_cooldowns: Vec<ApiCooldown>,
@@ -96,7 +102,8 @@ pub enum ZkillStatus {
 pub struct Character {
     pub id: u64,
     pub name: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// A fallback token, set only when the system credential store failed.
+    #[serde(skip)]
     pub refresh_token: Option<String>,
     #[serde(default)]
     pub corporation_id: Option<u64>,
@@ -240,7 +247,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn old_store_without_cache_still_deserializes() {
+    fn minimal_state_deserializes_with_defaults() {
         let store: Store = serde_json::from_str(
             r#"{"characters":[{"id":1,"name":"Pilot","refresh_token":"token"}]}"#,
         )
@@ -254,14 +261,13 @@ mod tests {
         assert!(store.manually_protected_corporations.is_empty());
         assert!(store.manually_protected_killmail_ids.is_empty());
         assert_eq!(store.refresh_interval_secs, DEFAULT_REFRESH_INTERVAL_SECS);
-        assert_eq!(store.characters[0].refresh_token.as_deref(), Some("token"));
+        assert_eq!(store.characters[0].refresh_token, None);
         assert_eq!(store.characters[0].corporation_id, None);
     }
 
     #[test]
     fn store_round_trips_cache_entries() {
         let mut store = Store {
-            show_protected_killmails: true,
             cached_killmails: vec![Killmail {
                 id: 7,
                 hash: "hash".into(),
@@ -294,7 +300,6 @@ mod tests {
         let restored: Store = serde_json::from_str(&json).unwrap();
 
         assert_eq!(restored.zkill_status[&42], ZkillStatus::Reported);
-        assert!(restored.show_protected_killmails);
         assert_eq!(restored.cached_killmails.len(), 1);
         assert_eq!(restored.cached_killmails[0].id, 7);
         assert_eq!(
@@ -307,39 +312,25 @@ mod tests {
     }
 
     #[test]
-    fn secure_store_tokens_are_not_serialized() {
+    fn preferences_and_refresh_tokens_are_not_serialized() {
         let store = Store {
             characters: vec![Character {
                 id: 1,
                 name: "Pilot".into(),
-                refresh_token: None,
+                refresh_token: Some("sentinel-token".into()),
                 corporation_id: None,
                 corporation_name: None,
             }],
+            show_protected_killmails: true,
             ..Store::default()
         };
 
         let json = serde_json::to_string(&store).unwrap();
 
+        assert!(!json.contains("sentinel-token"));
         assert!(!json.contains("refresh_token"));
-    }
-
-    #[test]
-    fn json_fallback_tokens_are_serialized() {
-        let store = Store {
-            characters: vec![Character {
-                id: 1,
-                name: "Pilot".into(),
-                refresh_token: Some("token".into()),
-                corporation_id: None,
-                corporation_name: None,
-            }],
-            ..Store::default()
-        };
-
-        let json = serde_json::to_string(&store).unwrap();
-
-        assert!(json.contains("refresh_token"));
+        assert!(!json.contains("show_protected_killmails"));
+        assert!(!json.contains("refresh_interval_secs"));
         assert!(store.characters[0].uses_json_refresh_token_fallback());
     }
 }

@@ -61,11 +61,20 @@ It expects `ekmp` in `~/.local/bin`. Installation never enables the service. Rem
 
 ## Authentication, data, and caches
 
-The release contains the public EVE client ID and loopback callback registration. Users must never create, enter, request, or share a client secret. PKCE refresh tokens use the operating-system credential store when possible; a fallback token in `ekmp.json` makes that file sensitive.
+The release contains the public EVE client ID and loopback callback registration. Users must never create, enter, request, or share a client secret. PKCE refresh tokens use the Secret Service credential store when possible. When it is unavailable, as on many headless hosts, tokens fall back to `credentials.json`, which is readable only by the user and removed once no fallback tokens remain.
 
-State is stored in `~/.config/ekmp/ekmp.json`. It holds preferences, cached unreported killmails, individual protection flags, compact reported-ID information, and scheduling metadata. Full reported killmail records and session-only successful submission results are not persisted. Portraits and public images use a separate image cache; cacheable ESI GET responses use a separate SQLite cache.
+Files follow the XDG Base Directory Specification:
 
-Do not attach `ekmp.json`, refresh tokens, authorization URLs, or killmail hashes to public issue reports.
+| File | Contents |
+| --- | --- |
+| `$XDG_CONFIG_HOME/ekmp/config.toml` (`~/.config/ekmp/`) | Preferences: `refresh-interval-secs` and `show-protected-killmails`. Edit it by hand or with `ekmp config set`; unknown keys are rejected. |
+| `$XDG_STATE_HOME/ekmp/state.json` (`~/.local/state/ekmp/`) | Characters, cached unreported killmails, protection, compact reported-ID information, scheduling, and API cooldowns. |
+| `$XDG_STATE_HOME/ekmp/credentials.json` | Fallback refresh tokens; present only when the credential store failed. |
+| `$XDG_CACHE_HOME/ekmp/` (`~/.cache/ekmp/`) | ESI responses (SQLite) and, in GUI builds, portraits and logos. Safe to delete. |
+
+Full reported killmail records and session-only successful submission results are not persisted.
+
+Do not attach `credentials.json`, `state.json`, refresh tokens, authorization URLs, or killmail hashes to public issue reports.
 
 ## Development
 

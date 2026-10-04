@@ -1,10 +1,11 @@
 /target/
 /dist/
 
-# Local ESI credentials and OAuth refresh tokens
+# Local state and OAuth refresh-token fallbacks
 ekmp.json
-/.config/ekmp.json
-/.config/ekmp/
+state.json
+credentials.json
+*.credentials.json
 
 # Claude Code personal settings
 /.claude/settings.local.json

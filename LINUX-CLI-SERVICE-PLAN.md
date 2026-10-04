@@ -82,7 +82,7 @@ ekmp                      one binary, default features = []
                           refreshes only: never posts or authenticates, never opens a browser
 
 Files (XDG):
-  $XDG_CONFIG_HOME/ekmp/config.json        preferences (refresh interval, show protected)
+  $XDG_CONFIG_HOME/ekmp/config.toml        preferences (hand-editable) (refresh interval, show protected)
   $XDG_STATE_HOME/ekmp/state.json          characters, cached killmails, status, schedule, cooldowns
   $XDG_STATE_HOME/ekmp/credentials.json    0600, used only if Secret Service fails
   $XDG_CACHE_HOME/ekmp/esi.sqlite          ESI response cache (can be deleted safely)
@@ -143,11 +143,15 @@ Each phase can be merged on its own and passes the four checks in `AGENTS.md`.
 - Add `persistence::paths` with `config_dir()`, `state_dir()` and
   `cache_dir()`. Each follows `$XDG_*_HOME` and falls back to `$HOME`. Create
   directories with mode 0700.
-- Split `Store` into `Config` (preferences) and `State` (everything else). Each
-  is saved atomically using the existing `persist_to_path`. Move the operation
-  lock and the service lock next to `state.json`.
-- Store the fallback refresh tokens in their own `credentials.json` (mode
-  0600). `state.json` then never contains secrets.
+- Keep `Store` as the one in-memory model, so the posting rules don't change.
+  `persistence::storage` splits it on save and merges it on load through
+  `StorePaths`. `Store`'s serde form is the state file, so preference fields
+  and refresh tokens are `#[serde(skip)]`. Each file is replaced atomically;
+  config (TOML, decided 2026-10-05) and credentials are only rewritten when
+  their values change, so comments in a hand-edited config survive. The operation
+  and service locks sit next to `state.json`.
+- Fallback refresh tokens go in their own `credentials.json` (mode 0600),
+  which is removed once it's empty. `state.json` never contains secrets.
 - Migration: none. AGENTS.md says compatibility isn't required. Document one
   `characters add` per character after upgrading.
 

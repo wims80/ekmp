@@ -2,19 +2,19 @@
 name = "ekmp"
 version = "0.3.0"
 edition = "2021"
-description = "A CLI and optional desktop interface for explicitly publishing EVE Online killmails to zKillboard"
+description = "A Linux CLI and refresh service for explicitly publishing EVE Online killmails to zKillboard"
 license = "MIT"
 repository = "https://github.com/wims80/ekmp"
 rust-version = "1.97"
 
 [features]
-default = ["gui"]
+default = []
 gui = ["dep:eframe", "dep:image", "egui_kittest/eframe"]
 dev-tools = ["eframe?/inspection"]
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-ctrlc = "3"
+ctrlc = { version = "3", features = ["termination"] }
 base64 = "0.23"
 eframe = { version = "0.36", optional = true, default-features = false, features = [
     "default_fonts",

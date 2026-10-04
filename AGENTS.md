@@ -5,8 +5,9 @@
   package, executable, application ID, storage paths, and platform assets use
   that identifier.
 - Repository creation and GitHub identity work remain tracked in `TODO.md`.
-- This is a Rust application with a CLI-first default interface and an optional
-  `eframe`/`egui` GUI feature.
+- This is a Rust application for Linux. The default build is the CLI and its
+  refresh service; the `eframe`/`egui` GUI is an opt-in `gui` feature that
+  release builds enable.
 - EVE data comes from ESI, authentication uses EVE SSO with PKCE, and killmails
   are submitted to zKillboard.
 - The EVE client ID is a public application identifier. A client secret must
@@ -108,9 +109,9 @@
   portraits and corporation logos.
 - `src/persistence/esi_cache.rs` owns the local SQLite cache for cacheable ESI
   GET responses, including expiry and conditional-request metadata.
-- `packaging/linux/` and `packaging/windows/` own release launchers and the
-  opt-in Linux systemd user-service template; `scripts/package-linux.sh` and
-  `scripts/package-windows.ps1` assemble the platform release archives.
+- `packaging/linux/` owns the release installer, desktop launcher, and the
+  opt-in systemd user-service template; `scripts/package-linux.sh` assembles
+  the Linux release archive.
 - Keep blocking HTTP and sleeps off the egui UI thread.
 - Keep submission-policy functions centralized and covered by tests.
 - When architectural boundaries, module ownership, or important paths change,

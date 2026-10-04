@@ -42,7 +42,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Open the desktop interface (requires the gui build feature).
+    /// Open the desktop interface (requires a build with the gui feature).
     Gui,
     #[command(subcommand)]
     Characters(Characters),
@@ -205,7 +205,7 @@ pub(crate) fn run() -> u8 {
         let result = crate::app::run(cli.scenario.as_deref(), cli.dev_state.as_deref());
         #[cfg(not(feature = "gui"))]
         let result: Result<(), String> =
-            Err("GUI support is unavailable; install a default build".into());
+            Err("GUI support is unavailable; rebuild with --features gui".into());
         return match result {
             Ok(()) => 0,
             Err(error) => {

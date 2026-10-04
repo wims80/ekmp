@@ -1,7 +1,7 @@
 # Release runbook
 
 This runbook covers the `v0.3.0` release of EVE Killmail Publisher.
-It ships x86-64 Linux (glibc 2.35+) and x86-64 Windows builds.
+It ships an x86-64 Linux (glibc 2.35+) build.
 
 ## One-time GitHub setup
 
@@ -21,7 +21,7 @@ public:
    merges, and retain an owner bypass for direct maintenance.
 5. Reauthenticate the local GitHub CLI before using it to create releases.
 
-Standard GitHub-hosted Linux and Windows runners are free for public
+Standard GitHub-hosted Linux runners are free for public
 repositories. The release workflow creates a draft, so publishing remains a
 deliberate manual action.
 
@@ -30,15 +30,14 @@ deliberate manual action.
 Each release attaches exactly these files:
 
 - `ekmp-vVERSION-x86_64-unknown-linux-gnu.tar.gz`
-- `ekmp-vVERSION-x86_64-pc-windows-msvc.zip`
 - `SHA256SUMS`
 
 The Linux archive contains the executable, `install.sh`, desktop-entry
 template, `hicolor` icon, installation notes, and MIT license. `install.sh`
 installs only for the current user under `~/.local`; `--uninstall` removes the
-program assets and deliberately preserves configuration. The Windows ZIP
-contains `ekmp.exe`, installation notes, and the license. Neither archive
-contains a default configuration file.
+program assets and deliberately preserves configuration. The archive contains
+no default configuration file. The release executable is built with the `gui`
+feature.
 
 GitHub's automatically generated source ZIP and tarball are source code, not
 runnable application downloads.
@@ -58,12 +57,12 @@ runnable application downloads.
    ```
 
 4. Create and push an annotated tag named `vVERSION`. The release workflow
-   verifies that the tag and Cargo version agree, builds both targets, creates
-   the archives and checksums, and opens a draft pre-release.
+   verifies that the tag and Cargo version agree, builds the release, creates
+   the archive and checksums, and opens a draft pre-release.
 5. Download the draft artifacts and complete the smoke tests below. Verify
    each archive against `SHA256SUMS`.
-6. Write concise release notes: supported platforms, glibc 2.35 floor,
-   unsigned-Windows warning, manual update model, known limitations, and the
+6. Write concise release notes: supported platform, glibc 2.35 floor,
+   manual update model, known limitations, and the
    GitHub Issues link. Publish the draft only after the smoke tests pass.
 7. Share the GitHub Release URL with the test group and monitor GitHub Issues.
 
@@ -72,17 +71,14 @@ runnable application downloads.
 - On Linux, install the exact downloaded archive in a clean user account and
   confirm the launcher, GNOME/KDE taskbar icon, direct execution, reinstall,
   and uninstall behavior. Confirm uninstall preserves `~/.config/ekmp`.
-- On Windows 10 or newer, run the exact downloaded `ekmp.exe`, confirm the
-  executable and window icons, browser authentication callback, persistence,
-  Credential Manager behavior, and external links.
-- On both platforms, authenticate, load cached and fresh killmails, confirm
+- Authenticate, load cached and fresh killmails, confirm
   protected-victim visibility, status refresh, and character removal.
 - Confirm that posting is always explicitly initiated, bulk posting excludes
   protected victims even after its confirmation dialog opens, and protected
   killmails require the individual `Post anyway` action.
 - Run the CLI (`ekmp status`, `ekmp refresh`, `ekmp list`) against the same
-  state as the GUI, and confirm the opt-in refresh service (systemd user unit
-  on Linux, scheduled task on Windows) refreshes data and never posts.
+  state as the GUI, and confirm the opt-in refresh service (systemd user unit)
+  refreshes data and never posts.
 - Test the Linux Secret Service fallback warning if practical. Never use or
   disclose a real refresh token in test artifacts or issue reports.
 

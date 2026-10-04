@@ -1,6 +1,6 @@
 # EVE Killmail Publisher
 
-EVE Killmail Publisher (`ekmp`) reviews EVE Online killmails and explicitly submits selected killmails to zKillboard. It is CLI-first and includes an optional desktop interface in normal releases.
+EVE Killmail Publisher (`ekmp`) reviews EVE Online killmails and explicitly submits selected killmails to zKillboard. It is a Linux command-line tool with an optional refresh service. Release builds also include an optional desktop interface; source builds include it only with the `gui` feature.
 
 Killmails are never submitted automatically. Authenticated characters and their corporations are protected victims automatically. Manually protected victims are hidden by default, excluded from bulk posting, and can only be sent through an explicit individual `Post anyway` action.
 
@@ -16,7 +16,7 @@ ekmp show KILLMAIL_ID
 ekmp post KILLMAIL_ID
 ```
 
-Use `ekmp gui` to open the desktop interface. The remaining commands are:
+Use `ekmp gui` to open the desktop interface in a build that includes it. The remaining commands are:
 
 | Command | Purpose |
 | --- | --- |
@@ -38,9 +38,7 @@ The refresh service performs refreshes only: it never posts, opens a browser, or
 
 ## Installation
 
-Download the archive for your operating system from [GitHub Releases](https://github.com/wims80/ekmp/releases). Initial releases support x86-64 Linux with glibc 2.35 or newer and x86-64 Windows 10 or newer.
-
-### Linux
+Download the Linux archive from [GitHub Releases](https://github.com/wims80/ekmp/releases). Releases support x86-64 Linux with glibc 2.35 or newer.
 
 Extract `ekmp-*-x86_64-unknown-linux-gnu.tar.gz`, enter it, and run:
 
@@ -61,42 +59,28 @@ systemctl --user enable --now ekmp-refresh.service
 
 It expects `ekmp` in `~/.local/bin`. Installation never enables the service. Remove it with `systemctl --user disable --now ekmp-refresh.service` and `rm ~/.config/systemd/user/ekmp-refresh.service`.
 
-### Windows
-
-Extract `ekmp-*-x86_64-pc-windows-msvc.zip`. Run `launch-gui.cmd` for the desktop interface or `ekmp.exe` in PowerShell or Command Prompt for the CLI. Windows may show a SmartScreen warning because the executable is not code signed; compare the archive with the release `SHA256SUMS` first.
-
-The refresh service is opt-in. From an interactive PowerShell session under the same Windows account that authenticated the characters, in the extracted release directory:
-
-```powershell
-$action = New-ScheduledTaskAction -Execute (Join-Path $PWD 'ekmp.exe') -Argument 'service run'
-$trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-Register-ScheduledTask -TaskName 'EVE Killmail Publisher Refresh' -Action $action -Trigger $trigger -Description 'Refreshes cached EVE data; never posts killmails.'
-```
-
-Remove it with `Unregister-ScheduledTask -TaskName 'EVE Killmail Publisher Refresh'`. Do not choose a different account or elevated task: credentials and local state belong to the authenticated user. No service is created automatically.
-
 ## Authentication, data, and caches
 
 The release contains the public EVE client ID and loopback callback registration. Users must never create, enter, request, or share a client secret. PKCE refresh tokens use the operating-system credential store when possible; a fallback token in `ekmp.json` makes that file sensitive.
 
-State is stored in `~/.config/ekmp/ekmp.json` on Linux and `%APPDATA%\ekmp\ekmp.json` on Windows. It holds preferences, cached unreported killmails, individual protection flags, compact reported-ID information, and scheduling metadata. Full reported killmail records and session-only successful submission results are not persisted. Portraits and public images use a separate image cache; cacheable ESI GET responses use a separate SQLite cache.
+State is stored in `~/.config/ekmp/ekmp.json`. It holds preferences, cached unreported killmails, individual protection flags, compact reported-ID information, and scheduling metadata. Full reported killmail records and session-only successful submission results are not persisted. Portraits and public images use a separate image cache; cacheable ESI GET responses use a separate SQLite cache.
 
 Do not attach `ekmp.json`, refresh tokens, authorization URLs, or killmail hashes to public issue reports.
 
 ## Development
 
-Normal builds include the GUI:
+The default build is the CLI and refresh service. It omits eframe and image decoding and works without a display:
 
 ```sh
-cargo run -- gui
-cargo test --all-features
+cargo build
+./target/debug/ekmp --help
 ```
 
-CLI-only builds omit eframe and image decoding and work without a display:
+The desktop interface is opt-in:
 
 ```sh
-cargo build --no-default-features
-./target/debug/ekmp --help
+cargo run --features gui -- gui
+cargo test --all-features
 ```
 
 ### Offline simulation

@@ -25,9 +25,10 @@ jobs:
           test "$version" = "$cargo_version"
       - run: cargo +1.97.1 fmt --check
       - run: cargo +1.97.1 check --locked
+      - run: cargo +1.97.1 check --locked --features gui
       - run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
       - run: cargo +1.97.1 test --locked --all-features
-      - run: cargo +1.97.1 build --locked --release
+      - run: cargo +1.97.1 build --locked --release --features gui
       - name: Enforce Linux compatibility floor
         shell: bash
         run: |
@@ -49,31 +50,8 @@ jobs:
           path: dist/*.tar.gz
           retention-days: 1
 
-  build-windows:
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v7
-      - run: rustup toolchain install 1.97.1 --profile minimal --component clippy,rustfmt
-      - name: Confirm tag version
-        shell: pwsh
-        run: |
-          $version = $env:GITHUB_REF_NAME.Substring(1)
-          $cargoVersion = (Select-String -Path Cargo.toml -Pattern '^version = "([^"]+)"').Matches[0].Groups[1].Value
-          if ($version -ne $cargoVersion) { throw "Tag $version does not match Cargo version $cargoVersion" }
-      - run: cargo +1.97.1 check --locked
-      - run: cargo +1.97.1 clippy --locked --all-targets --all-features -- -D warnings
-      - run: cargo +1.97.1 test --locked --all-features
-      - run: cargo +1.97.1 build --locked --release
-      - shell: pwsh
-        run: scripts/package-windows.ps1 -Version $env:GITHUB_REF_NAME.Substring(1)
-      - uses: actions/upload-artifact@v7
-        with:
-          name: release-windows
-          path: dist/*.zip
-          retention-days: 1
-
   create-draft:
-    needs: [build-linux, build-windows]
+    needs: [build-linux]
     runs-on: ubuntu-22.04
     permissions:
       contents: write

@@ -1,0 +1,28 @@
+# EVE Killmail Publisher refresh service, run as a systemd user service.
+# It refreshes cached data only and never posts killmails.
+#
+# Install:  cp ekmp.service ~/.config/systemd/user/ && systemctl --user daemon-reload
+# Enable:   systemctl --user enable --now ekmp.service
+# Logs:     journalctl --user -u ekmp
+# To keep it running while you are logged out: loginctl enable-linger "$USER"
+
+[Unit]
+Description=EVE Killmail Publisher refresh service (never posts killmails)
+Documentation=https://github.com/wims80/ekmp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/ekmp service run
+Restart=on-failure
+RestartSec=60
+UMask=0077
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=default.target

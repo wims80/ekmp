@@ -300,32 +300,72 @@ fn configuration_invalid_values_are_invocation_errors() {
     }
 }
 
+/// Sends `signal` to the service and returns its exit code and stderr.
 #[cfg(unix)]
-#[test]
-fn service_interrupt_releases_lifetime_lock_and_exits_130() {
-    let state = TestState::new();
-    let mut service = service_process(&state);
-    assert_service_is_running(service.child_mut());
+fn stop_with_signal(service: &mut ServiceProcess, signal: &str) -> (Option<i32>, String) {
     assert!(Command::new("kill")
-        .args(["-INT", &service.child_mut().id().to_string()])
+        .args([signal, &service.child_mut().id().to_string()])
         .status()
         .unwrap()
         .success());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    loop {
+    let status = loop {
         if let Some(status) = service.child_mut().try_wait().unwrap() {
-            assert_eq!(status.code(), Some(130));
-            break;
+            break status;
         }
         assert!(
             std::time::Instant::now() < deadline,
-            "service did not stop after SIGINT"
+            "service did not stop after {signal}"
         );
         std::thread::sleep(std::time::Duration::from_millis(25));
+    };
+    let mut diagnostics = String::new();
+    if let Some(mut stderr) = service.child_mut().stderr.take() {
+        use std::io::Read;
+        stderr.read_to_string(&mut diagnostics).unwrap();
     }
-    let status = success(run_scenario(&state, &["--json", "status"]));
-    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
-    assert_eq!(status["service_running"], false);
+    (status.code(), diagnostics)
+}
+
+#[cfg(unix)]
+#[test]
+fn service_stops_cleanly_on_sigint_and_sigterm_and_releases_its_lock() {
+    for signal in ["-INT", "-TERM"] {
+        let state = TestState::new();
+        let mut service = service_process(&state);
+        assert_service_is_running(service.child_mut());
+
+        let (code, diagnostics) = stop_with_signal(&mut service, signal);
+
+        assert_eq!(code, Some(0), "{signal}: {diagnostics}");
+        assert!(diagnostics.contains("Refresh service stopped."));
+        let status = success(run_scenario(&state, &["--json", "status"]));
+        let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status["service_running"], false);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn service_without_characters_waits_instead_of_exiting() {
+    let state = TestState::new();
+    success(run_scenario(
+        &state,
+        &["characters", "remove", "1001", "--yes"],
+    ));
+    let mut service = service_process(&state);
+    assert_service_is_running(service.child_mut());
+
+    let (code, diagnostics) = stop_with_signal(&mut service, "-TERM");
+
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        diagnostics
+            .matches("No characters are authenticated")
+            .count(),
+        1,
+        "{diagnostics}"
+    );
 }
 
 #[test]

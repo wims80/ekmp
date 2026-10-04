@@ -11,6 +11,8 @@ use crate::{
         MIN_REFRESH_INTERVAL_SECS,
     },
 };
+mod service;
+
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -338,7 +340,10 @@ fn execute(cli: &Cli, core: &Core, cancel: &Cancellation) -> Result<Output, Core
         Command::Protect(command) => (protect(command, core)?, 0),
         Command::Config(command) => (config(command, core)?, 0),
         Command::Status => (to_json(core.snapshot()?.status)?, 0),
-        Command::Service(Service::Run { interval }) => service(core, *interval, cancel, cli.json)?,
+        // A stopped service is a clean exit, not a cancelled command.
+        Command::Service(Service::Run { interval }) => {
+            return service::run(core, *interval, cancel, cli.json);
+        }
     };
     Ok((value, if cancel.is_cancelled() { 130 } else { code }))
 }
@@ -531,35 +536,6 @@ fn to_json(value: impl Serialize) -> Result<Value, CoreError> {
         .map_err(|_| CoreError::Operational("could not encode output".into()))
 }
 
-fn service(
-    core: &Core,
-    interval: Option<Duration>,
-    cancel: &Cancellation,
-    json_output: bool,
-) -> Result<Output, CoreError> {
-    let _guard = core.try_service_guard()?;
-    eprintln!("Refresh service running; press Ctrl+C to stop.");
-    while !cancel.is_cancelled() {
-        match core.refresh_due(interval, cancel) {
-            Ok(result) => {
-                if json_output && !result.idle && result.deferred_until.is_none() {
-                    emit(true, &to_json(result)?);
-                }
-            }
-            Err(CoreError::Busy) => {}
-            Err(CoreError::Cancelled) => break,
-            Err(error) => eprintln!("Refresh deferred: {error}"),
-        }
-        let delay = core
-            .next_refresh_delay(interval)
-            .ok()
-            .flatten()
-            .unwrap_or(Duration::from_secs(2));
-        cancel.wait(delay.clamp(Duration::from_secs(1), Duration::from_secs(2)));
-    }
-    Ok((json!({"service":"stopped"}), 130))
-}
-
 fn confirm(yes: bool, prompt: &str, cancel: &Cancellation) -> Result<(), CoreError> {
     if cancel.is_cancelled() {
         return Err(CoreError::Cancelled);
@@ -633,6 +609,9 @@ fn mail_output(store: &Store, mail: &Killmail, now: u64, details: bool) -> Value
     })
 }
 fn emit(json_output: bool, value: &Value) {
+    if value.is_null() {
+        return;
+    }
     if json_output {
         println!("{value}");
     } else {

@@ -48,16 +48,25 @@ Extract `ekmp-*-x86_64-unknown-linux-gnu.tar.gz`, enter it, and run:
 
 This installs `ekmp` in `~/.local/bin`, a desktop launcher, and its icon for the current user. The desktop launcher runs `ekmp gui`; invoke `ekmp` directly for the CLI. Remove the program, launcher, and icon with `./install.sh --uninstall`; settings and caches remain in place.
 
-The archive contains an opt-in `ekmp-refresh.service` template. To enable the refresh service for the authenticated user:
+### Refresh service
+
+The archive contains an opt-in systemd user unit, `ekmp.service`. It runs `ekmp service run` as the user who authenticated the characters, so it uses the same credentials and state. To enable it:
 
 ```sh
 mkdir -p ~/.config/systemd/user
-cp ekmp-refresh.service ~/.config/systemd/user/
+cp ekmp.service ~/.config/systemd/user/
 systemctl --user daemon-reload
-systemctl --user enable --now ekmp-refresh.service
+systemctl --user enable --now ekmp.service
 ```
 
-It expects `ekmp` in `~/.local/bin`. Installation never enables the service. Remove it with `systemctl --user disable --now ekmp-refresh.service` and `rm ~/.config/systemd/user/ekmp-refresh.service`.
+It expects `ekmp` in `~/.local/bin`. Installation never enables the service.
+
+- Logs: `journalctl --user -u ekmp`. Each refresh logs one summary line; tokens, killmail hashes, and authorization URLs are never logged.
+- Status: `ekmp status` reports whether the service is running.
+- Without a login session, for example on a server: `loginctl enable-linger "$USER"` keeps user services running.
+- Remove it with `systemctl --user disable --now ekmp.service` and `rm ~/.config/systemd/user/ekmp.service`.
+
+The service checks at least once a minute whether a refresh is due, so `config set` changes and new characters take effect without a restart. With no authenticated characters it waits rather than exiting. `systemctl --user stop` (SIGTERM) or Ctrl+C finishes the current request, saves, and exits with status 0.
 
 ## Authentication, data, and caches
 

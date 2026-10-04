@@ -59,9 +59,13 @@
   cancellation, waits, API cooldowns, and durable zKillboard request spacing.
   Integration errors convert into `CoreError` at this boundary. Tests live alongside their owning modules, with shared backend and
   store fixtures in test-only `test_support.rs`.
-- `src/cli.rs` owns Clap command parsing and value validation, terminal
-  confirmation, JSON rendering, cancellation handling, offline-scenario core
-  construction shared with the GUI, and the foreground refresh service.
+- `src/cli/mod.rs` owns Clap command parsing and value validation, terminal
+  confirmation, JSON rendering, cancellation handling, and offline-scenario
+  core construction shared with the GUI. `src/cli/service.rs` owns the
+  foreground refresh service run by the `ekmp.service` systemd user unit: it
+  only refreshes, waits until a refresh is due (checking at least once a
+  minute), logs one line per cycle to stderr for journald, waits rather than
+  exits without characters, and exits 0 on SIGINT or SIGTERM.
 - `src/clock.rs` owns system time and HTTP-date conversion.
 - `src/app/` owns the optional GUI shell and its launcher. It renders core
   snapshots, GUI-only textures and expansion state, and polls shared state

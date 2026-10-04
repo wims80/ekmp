@@ -228,6 +228,20 @@ Done 2026-10-05. Findings from checking live ESI at compatibility date
 - `ekmp status` already reports whether the service is running, using the
   service lock. Keep that. Document `journalctl --user -u ekmp` for logs.
 
+Done 2026-10-05:
+
+- The loop lives in `src/cli/service.rs`. `cli.rs` became `cli/mod.rs`, and
+  Phase 6 finishes the split.
+- It waits between 5 s and 60 s. The 5 s floor applies while another command
+  holds the store.
+- The summary line reads "N unreported, M awaiting zKillboard status; next in
+  Xm". It shows minutes until the next refresh rather than a wall-clock time,
+  to avoid a time-zone dependency.
+- The unit is renamed `ekmp.service` and also sets `UMask=0077` and
+  `RestrictSUIDSGID=yes`. It was checked with `systemd-analyze --user verify`
+  and with a transient `systemd-run --user` unit using the same hardening:
+  it started, logged, and stopped cleanly.
+
 ### Phase 5: Authentication on headless hosts
 
 - If neither `DISPLAY` nor `WAYLAND_DISPLAY` is set, behave as if

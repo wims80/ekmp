@@ -4,3 +4,6 @@
 ekmp.json
 /.config/ekmp.json
 /.config/ekmp/
+
+# Claude Code personal settings
+/.claude/settings.local.json

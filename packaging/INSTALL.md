@@ -2,6 +2,8 @@
 
 ## Linux
 
+On Arch Linux, you can instead build a pacman package with `makepkg -si` in `packaging/arch` of a source checkout; see the project README.
+
 Extract the complete archive and run `./install.sh`. It installs for the current user without administrator access: `ekmp` in `~/.local/bin`, the `ekmp.service` systemd user unit, bash/zsh/fish completions, man pages, and a desktop launcher for `ekmp gui`. Run `ekmp --help` or `man ekmp` to get started, and `ekmp characters add` to sign in (`--paste` on a headless host).
 
 The refresh service is opt-in: `systemctl --user enable --now ekmp`. It refreshes cached data only and never posts killmails. View its logs with `journalctl --user -u ekmp`, and run `loginctl enable-linger "$USER"` to keep it running while logged out. Installation never enables or starts it.

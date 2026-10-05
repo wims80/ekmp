@@ -130,12 +130,18 @@
   portraits and corporation logos.
 - `src/persistence/esi_cache.rs` owns the local SQLite cache for cacheable ESI
   GET responses, including expiry and conditional-request metadata.
-- `packaging/linux/` owns the release installer, the `ekmp.service` systemd
-  user unit, and the desktop launcher. `install.sh` installs per user under
-  `~/.local` and `~/.config/systemd/user`, never enables or starts the
-  service, and its `--uninstall` stops the service and keeps settings, state,
-  and caches. `scripts/package-linux.sh` assembles the release archive,
-  generating completions and man pages from the release binary.
+- `packaging/linux/` owns the release installer and the templates for the
+  `ekmp.service` systemd user unit (`ekmp.service.in`, `@BINDIR@`) and the
+  desktop launcher (`ekmp.desktop.in`, `@EXEC_PATH@`). `install.sh` installs
+  per user under `~/.local` and `~/.config/systemd/user`, never enables or
+  starts the service, and its `--uninstall` stops the service and keeps
+  settings, state, and caches. `scripts/package-linux.sh` assembles the
+  release archive, generating completions and man pages from the release
+  binary and filling the unit template with `~/.local/bin`.
+- `packaging/arch/PKGBUILD` builds the tagged release (`#tag=v$pkgver`) from
+  source into a pacman package installed under `/usr`, with the same assets.
+  Its `pkgver` must equal the Cargo package version; `tests/packaging.rs`
+  enforces this. It disables makepkg LTO, which breaks linking `ring`.
 - Keep blocking HTTP and sleeps off the egui UI thread.
 - Keep submission-policy functions centralized and covered by tests.
 - When architectural boundaries, module ownership, or important paths change,

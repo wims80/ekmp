@@ -1,0 +1,73 @@
+# Maintainer: <wims80@gmail.com>
+#
+# Builds the tagged release from GitHub. Bump pkgver together with the Cargo
+# package version; tests/packaging.rs fails when they differ.
+
+pkgname=ekmp
+pkgver=0.3.0
+pkgrel=1
+pkgdesc='CLI, GUI and refresh service for explicitly publishing EVE Online killmails to zKillboard'
+arch=(x86_64)
+url='https://github.com/wims80/ekmp'
+license=(MIT)
+# winit and glutin load the windowing and GL libraries at runtime.
+depends=(
+  gcc-libs
+  glibc
+  hicolor-icon-theme
+  libglvnd
+  libx11
+  libxcursor
+  libxi
+  libxkbcommon
+  libxrandr
+  wayland
+)
+makedepends=(cargo git)
+# makepkg's LTO flags turn ring's C objects into GCC bitcode that rust-lld cannot link.
+options=(!lto)
+optdepends=('org.freedesktop.secrets: store refresh tokens in the system credential store')
+source=("$pkgname::git+$url.git#tag=v$pkgver")
+sha256sums=('SKIP')
+
+prepare() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
+}
+
+build() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo build --frozen --release --features gui
+
+  local ekmp=target/release/ekmp
+  mkdir -p generated/man
+  "$ekmp" generate completions bash > generated/ekmp.bash
+  "$ekmp" generate completions zsh > generated/_ekmp
+  "$ekmp" generate completions fish > generated/ekmp.fish
+  "$ekmp" generate man generated/man
+  sed 's|@BINDIR@|/usr/bin|' packaging/linux/ekmp.service.in > generated/ekmp.service
+  sed 's|@EXEC_PATH@|/usr/bin/ekmp|' packaging/linux/ekmp.desktop.in > generated/ekmp.desktop
+}
+
+check() {
+  cd "$pkgname"
+  export RUSTUP_TOOLCHAIN=stable
+  export CARGO_TARGET_DIR=target
+  cargo test --frozen --features gui
+}
+
+package() {
+  cd "$pkgname"
+  install -Dm755 target/release/ekmp -t "$pkgdir/usr/bin/"
+  install -Dm644 generated/ekmp.service -t "$pkgdir/usr/lib/systemd/user/"
+  install -Dm644 generated/ekmp.desktop -t "$pkgdir/usr/share/applications/"
+  install -Dm644 assets/app-icon.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/ekmp.png"
+  install -Dm644 generated/ekmp.bash "$pkgdir/usr/share/bash-completion/completions/ekmp"
+  install -Dm644 generated/_ekmp -t "$pkgdir/usr/share/zsh/site-functions/"
+  install -Dm644 generated/ekmp.fish -t "$pkgdir/usr/share/fish/vendor_completions.d/"
+  install -Dm644 generated/man/*.1 -t "$pkgdir/usr/share/man/man1/"
+  install -Dm644 LICENSE -t "$pkgdir/usr/share/licenses/$pkgname/"
+}

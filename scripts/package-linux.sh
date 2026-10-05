@@ -37,7 +37,8 @@ mkdir -p -- "$package_dir"
 
 install -m 755 -- "$binary" "$package_dir/ekmp"
 install -m 755 -- "$repo_root/packaging/linux/install.sh" "$package_dir/install.sh"
-install -m 644 -- "$repo_root/packaging/linux/ekmp.service" "$package_dir/ekmp.service"
+sed 's|@BINDIR@|%h/.local/bin|' "$repo_root/packaging/linux/ekmp.service.in" > "$package_dir/ekmp.service"
+chmod 644 -- "$package_dir/ekmp.service"
 install -m 644 -- "$repo_root/packaging/INSTALL.md" "$package_dir/README.md"
 install -m 644 -- "$repo_root/LICENSE" "$package_dir/LICENSE"
 

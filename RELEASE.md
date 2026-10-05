@@ -47,7 +47,8 @@ runnable application downloads.
 ## Creating a release
 
 1. Finish the release changes on `main` and wait for CI to pass.
-2. Set the Cargo package version to the intended numeric version and ensure the
+2. Set the Cargo package version to the intended numeric version, set the same
+   `pkgver` (and `pkgrel=1`) in `packaging/arch/PKGBUILD`, and ensure the
    Rust toolchain, lockfile, README, and release notes are current.
 3. Run the full local verification suite:
 
@@ -73,6 +74,9 @@ runnable application downloads.
 - On Linux, install the exact downloaded archive in a clean user account and
   confirm the launcher, GNOME/KDE taskbar icon, direct execution, reinstall,
   and uninstall behavior. Confirm uninstall preserves `~/.config/ekmp` and `~/.local/state/ekmp`.
+- On Arch Linux, after pushing the tag, run `makepkg -si` in
+  `packaging/arch` and confirm `ekmp`, the desktop launcher, completions, man
+  pages, and `systemctl --user cat ekmp` point at `/usr/bin/ekmp`.
 - Authenticate, load cached and fresh killmails, confirm
   protected-victim visibility, status refresh, and character removal.
 - Confirm that posting is always explicitly initiated, bulk posting excludes

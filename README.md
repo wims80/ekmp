@@ -40,6 +40,20 @@ The refresh service performs refreshes only: it never posts, opens a browser, or
 
 ## Installation
 
+### Arch Linux
+
+`packaging/arch/PKGBUILD` builds the latest tagged release from source and installs it system-wide with pacman:
+
+```sh
+git clone https://github.com/wims80/ekmp.git
+cd ekmp/packaging/arch
+makepkg -si
+```
+
+It installs `ekmp` in `/usr/bin`, the `ekmp.service` systemd user unit in `/usr/lib/systemd/user/`, shell completions, man pages, and the desktop launcher. To upgrade, `git pull` and run `makepkg -si` again; remove it with `pacman -R ekmp`. Before switching from the release archive, run its `./install.sh --uninstall`: files under `~/.local` and `~/.config/systemd/user` take precedence over the package's.
+
+### Other distributions
+
 Download the Linux archive from [GitHub Releases](https://github.com/wims80/ekmp/releases). Releases support x86-64 Linux with glibc 2.35 or newer.
 
 Extract `ekmp-*-x86_64-unknown-linux-gnu.tar.gz`, enter it, and run:
@@ -64,18 +78,18 @@ bash and fish load the completions automatically. For zsh, add `fpath+=(~/.local
 
 ### Refresh service
 
-`install.sh` installs an opt-in systemd user unit, `ekmp.service`. It runs `ekmp service run` as the user who authenticated the characters, so it uses the same credentials and state. Installation never enables it. To enable it:
+Both installation methods install an opt-in systemd user unit, `ekmp.service`. It runs `ekmp service run` as the user who authenticated the characters, so it uses the same credentials and state. Installation never enables it. To enable it:
 
 ```sh
 systemctl --user enable --now ekmp
 ```
 
-Without the installer, copy `ekmp.service` to `~/.config/systemd/user/` and run `systemctl --user daemon-reload` first; the unit expects `ekmp` in `~/.local/bin`.
+Without the installer, copy the archive's `ekmp.service` to `~/.config/systemd/user/` and run `systemctl --user daemon-reload` first; the unit expects `ekmp` in `~/.local/bin`.
 
 - Logs: `journalctl --user -u ekmp`. Each refresh logs one summary line; tokens, killmail hashes, and authorization URLs are never logged.
 - Status: `ekmp status` reports whether the service is running.
 - Without a login session, for example on a server: `loginctl enable-linger "$USER"` keeps user services running.
-- Remove it with `systemctl --user disable --now ekmp.service` and `rm ~/.config/systemd/user/ekmp.service`.
+- Disable it with `systemctl --user disable --now ekmp.service`. A manually copied unit is removed with `rm ~/.config/systemd/user/ekmp.service`.
 
 The service checks at least once a minute whether a refresh is due, so `config set` changes and new characters take effect without a restart. With no authenticated characters it waits rather than exiting. `systemctl --user stop` (SIGTERM) or Ctrl+C finishes the current request, saves, and exits with status 0.
 

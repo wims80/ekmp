@@ -1,0 +1,6 @@
+# makepkg build output
+/ekmp/
+/src/
+/pkg/
+*.pkg.tar.*
+*.log
